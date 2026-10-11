@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+build/
+dist/
+/data/*
+results/
+*.fits
+*.h5
+*.npz
+
+# Pipeline outputs for the example notebook
+!/data/ThAr20251107_2.center.fits
+!/data/ecThAr20251107_2.center

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gaoesrvip"
+version = "0.1.0"
+description = "Two-Gaussian instrumental profiles from GAOES-RV ThAr spectra"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24", "scipy>=1.10", "pandas>=2.0", "matplotlib>=3.7",
+  "astropy>=5.3", "jax>=0.4.30", "numpyro>=0.15.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+notebook = ["ipykernel>=6"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gaoesrvip"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/examples", "/data", "/README.md", "/pyproject.toml", "/.gitignore"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
