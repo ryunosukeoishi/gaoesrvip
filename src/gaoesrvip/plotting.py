@@ -95,8 +95,6 @@ def _posterior_lines(order, i, velocity, indices, *, tophat, reference=None):
 
 
 def _plot_lines(result, *, n_draws=30, seed=0):
-    if result.settings['mode'] != 'individual':
-        raise ValueError('Use overlay() for common fits')
     figures, rng = [], np.random.default_rng(seed)
     velocity = np.linspace(-10, 10, 2001)
     tophat = result.settings['tophat']
@@ -109,7 +107,7 @@ def _plot_lines(result, *, n_draws=30, seed=0):
             rows = (len(page)+cols-1)//cols
             fig, axes = plt.subplots(rows, cols, squeeze=False, sharex=True,
                 figsize=(2.8*cols, 1.8*rows+.6), layout='constrained')
-            fig.suptitle(f'Order {d.order}: individual 2G', fontsize=13)
+            fig.suptitle(f"Order {d.order}: {result.settings['mode']} 2G", fontsize=13)
             for panel, (ax, i) in enumerate(zip(axes.flat, page)):
                 center = np.median(order.local_samples[:, i, 3])
                 shape = np.median(order.shape_for_line(i), axis=0)

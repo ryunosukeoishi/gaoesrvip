@@ -32,6 +32,7 @@ individual.resolving_power()
 
 common = fit(data, mode="common", tophat=True)
 common.parameters
+common.plot_lines()
 common.overlay()
 ```
 
@@ -54,9 +55,15 @@ The profile is `(1-f) N(v; 0, sigma1) + f N(v; delta, sigma2)`, with `f < 0.5`.
 The fitted `center` is the center of Gaussian 1.
 Representative curves use the median of each posterior parameter.
 
-- `individual.plot_lines()`: line data, the two-Gaussian model and its components, and curves drawn from the posterior.
+- `individual.plot_lines()` / `common.plot_lines()`: line data, the two-Gaussian model and its components, and curves drawn from the posterior.
+  Common fits use the order's shared profile with each line's own background, slope, flux, and center.
   Zero velocity corresponds to the tabulated wavelength.
 - `individual.resolving_power()`: R versus wavelength with p16–p84 error bars.
   Each order has its own color and a matching horizontal median line with its value in the legend.
 - `common.overlay()`: three panels showing data and model, residuals, and median residuals.
   Zero velocity corresponds to the peak of the displayed model.
+  Use `common.overlay(wavelength_range=(5000, 5100))` to display only lines whose
+  tabulated wavelengths (`lab_wave`, in Å) fall within the inclusive range.
+  This reuses the fitted common IP and line parameters; residual medians and the
+  representative pixel width are computed from the selected lines.
+  Orders with no matching lines are omitted; if no lines match, a `ValueError` is raised.
