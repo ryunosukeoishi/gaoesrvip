@@ -1,5 +1,5 @@
 """Inspectable results, portable serialization, and parameter tables."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from pathlib import Path
 import json
@@ -87,8 +87,27 @@ class FitResult:
     def resolving_power(self):
         return _plot_resolving_power(self)
 
-    def overlay(self):
-        return _plot_overlay(self)
+    def overlay(self, *, wavelength_range=None):
+        """Overlay common fits, optionally selecting an inclusive lab-wave range in Å.
+
+        Selection affects the displayed lines and residuals without refitting.
+        Orders without matching lines are omitted; no matches raises ValueError.
+        """
+        if wavelength_range is None:
+            return _plot_overlay(self)
+        bounds = np.asarray(wavelength_range, dtype=float)
+        if bounds.shape != (2,) or not np.isfinite(bounds).all() or bounds[0] > bounds[1]:
+            raise ValueError('wavelength_range must be two finite bounds (min, max) in Angstrom with min <= max')
+        orders = []
+        for order in self.orders:
+            wave = order.data.lab_wave
+            selected = (wave >= bounds[0]) & (wave <= bounds[1])
+            if selected.any():
+                orders.append(replace(order, data=order.data.select(selected),
+                                      local_samples=order.local_samples[:, selected]))
+        if not orders:
+            raise ValueError('No lines within wavelength_range')
+        return _plot_overlay(replace(self, orders=orders))
 
     def save(self, output_dir, *, figures=True, overwrite=False):
         """Save parameter CSVs, posterior arrays and optional figures."""

@@ -87,8 +87,6 @@ def test_roundtrip_and_padded_pixels(tmp_path, mode):
     assert not list(output.glob('*.pdf'))
     if mode == 'common':
         assert not list(output.glob('fits_*.png'))
-        with pytest.raises(ValueError, match='overlay'):
-            result.plot_lines()
     with pytest.raises(FileExistsError):
         result.save(output)
 
@@ -156,26 +154,103 @@ def test_overlay_matches_pixel_model(tophat):
 
 
 @pytest.mark.parametrize('tophat', [True, False])
-def test_individual_line_plots_match_observations(tophat):
+@pytest.mark.parametrize('wavelength_range, selected', [((5000, 5100), [1, 2]), ((5000, 5000), [1])])
+def test_overlay_wavelength_selection(tophat, wavelength_range, selected):
+    """Select displayed lines and residual statistics while retaining the fitted IP."""
+    from dataclasses import replace
+    import matplotlib.pyplot as plt
+    from gaoesrvip.plotting import _model_peak
+    data = synthetic(tophat=tophat)
+    data.lab_wave = np.array([4900., 5000., 5100.])
+    data.fit_wave = np.array([5000., 4900., 4900.])
+    other = replace(data, order=105, lab_wave=np.array([6000., np.nan, 6200.]))
+    result = initialized_result([other, data], tophat=tophat)
+    order = result.orders[1]
+    # Give the lines distinct nonzero residuals after fitting.
+    data.y += np.array([100., 2., -3.])[:, None]
+    local_before, shape_before = order.local_samples.copy(), order.shape_samples.copy()
+    fig = result.overlay(wavelength_range=wavelength_range)
+    assert len(fig.axes) == 3  # The first order has no matching lines.
+    top, bottom, zoom = fig.axes
+    n = len(selected)
+    assert top.get_title() == f'Order 104 ({n} lines)'
+    assert len(top.lines) == n+4
+    assert len(bottom.lines) == n+2
+    shape = np.median(shape_before, axis=0)
+    dv = np.median(data.dv[selected])
+    peak = _model_peak(shape, dv, tophat=tophat)
+    total, first, second = top.lines[n:n+3]
+    expected = pixel_mass(total.get_xdata()+peak, shape, dv, tophat=tophat)/dv
+    np.testing.assert_allclose(total.get_ydata(), expected, atol=1e-14)
+    np.testing.assert_allclose(first.get_ydata()+second.get_ydata(), expected, atol=1e-14)
+    residuals = order.residual_lines(tophat=tophat)
+    grid = zoom.lines[0].get_xdata()
+    interpolated = []
+    for panel, i in enumerate(selected):
+        v, observed = order.normalized_line(i)
+        np.testing.assert_allclose(top.lines[panel].get_xdata(), v-peak)
+        np.testing.assert_allclose(top.lines[panel].get_ydata(), observed)
+        v, residual = residuals[i]
+        np.testing.assert_allclose(bottom.lines[panel].get_xdata(), v-peak)
+        np.testing.assert_allclose(bottom.lines[panel].get_ydata(), residual)
+        interpolated.append(np.interp(grid, v-peak, residual, left=np.nan, right=np.nan))
+    expected_median = np.nanmedian(interpolated, axis=0)
+    np.testing.assert_allclose(zoom.lines[0].get_ydata(), expected_median)
+    np.testing.assert_allclose(bottom.lines[n].get_ydata(), expected_median)
+    assert len(result.orders) == 2
+    np.testing.assert_array_equal(order.data.lab_wave, [4900., 5000., 5100.])
+    np.testing.assert_array_equal(order.local_samples, local_before)
+    np.testing.assert_array_equal(order.shape_samples, shape_before)
+    plt.close(fig)
+
+
+@pytest.mark.parametrize('bounds', [(5100, 5000), (np.nan, 5100), (5000, np.inf),
+                                   (5000,), (5000, 5100, 5200), 5000])
+def test_overlay_rejects_invalid_wavelength_range(bounds):
+    from gaoesrvip.results import FitResult
+    with pytest.raises(ValueError, match='wavelength_range must be two finite bounds'):
+        FitResult([], dict(mode='common', tophat=True)).overlay(wavelength_range=bounds)
+
+
+def test_overlay_no_matching_wavelengths():
+    import matplotlib.pyplot as plt
+    result = initialized_result(synthetic())
+    result.orders[0].data.lab_wave = np.array([4900., np.nan, 5200.])
+    figures_before = plt.get_fignums()
+    with pytest.raises(ValueError, match='No lines within wavelength_range'):
+        result.overlay(wavelength_range=(5000, 5100))
+    assert plt.get_fignums() == figures_before
+
+
+@pytest.mark.parametrize('tophat', [True, False])
+@pytest.mark.parametrize('mode', ['individual', 'common'])
+def test_line_plots_match_observations(mode, tophat):
     import matplotlib.pyplot as plt
     data = synthetic(tophat=tophat)
-    result = initialized_result(data, mode='individual', tophat=tophat)
+    result = initialized_result(data, mode=mode, tophat=tophat)
     figures = result.plot_lines()
     assert len(figures) == 1
-    for i, (ax, (v, residual), dv, shape) in enumerate(zip(figures[0].axes,
-            result.orders[0].residual_lines(tophat=tophat), data.dv,
-            result.orders[0].shape_samples[0])):
+    assert figures[0]._suptitle.get_text() == f'Order {data.order}: {mode} 2G'
+    order = result.orders[0]
+    for i, (ax, (v, residual), dv) in enumerate(zip(figures[0].axes,
+            order.residual_lines(tophat=tophat), data.dv)):
+        shape = order.shape_for_line(i)[0]
         observed = ax.lines[0]
-        center = np.median(result.orders[0].local_samples[:, i, 3])
+        center = np.median(order.local_samples[:, i, 3])
         reference = data.table_pixel[i]
         np.testing.assert_allclose(observed.get_xdata(), v+(center-reference)*dv)
         predicted = pixel_mass(v, shape, dv, tophat=tophat)/dv
         np.testing.assert_allclose(observed.get_ydata()-predicted, residual, atol=1e-14)
+        total = ax.lines[1]
+        expected = pixel_mass(total.get_xdata()+(reference-center)*dv,
+                              shape, dv, tophat=tophat)/dv
+        np.testing.assert_allclose(total.get_ydata(), expected, atol=1e-14)
     plt.close(figures[0])
 
 
 @pytest.mark.parametrize('tophat', [True, False])
-def test_fit_components_use_median_parameters(tophat):
+@pytest.mark.parametrize('mode', ['individual', 'common'])
+def test_fit_components_use_median_parameters(mode, tophat):
     """Use parameter medians consistently for model and normalization."""
     import matplotlib.pyplot as plt
     from gaoesrvip.results import FitResult, OrderFit
@@ -184,8 +259,8 @@ def test_fit_components_use_median_parameters(tophat):
                       [[40., .2, 2400., 1.2]]])
     shape = np.array([[[1.2, .25, 1.8, 1.]], [[2., .45, .8, -1.5]],
                       [[2.8, .4, 1.4, 3.]]])
-    r = FitResult([OrderFit(d, local, shape)],
-                  dict(mode='individual', tophat=tophat))
+    samples = shape[:, 0] if mode == 'common' else shape
+    r = FitResult([OrderFit(d, local, samples)], dict(mode=mode, tophat=tophat))
     fig = r.plot_lines()[0]
     observed, total, first, second = fig.axes[0].lines[:4]
     params, profile = np.median(local[:, 0], axis=0), np.median(shape[:, 0], axis=0)
@@ -197,6 +272,13 @@ def test_fit_components_use_median_parameters(tophat):
     xdata = d.x[0, d.mask[0]]
     baseline = params[0]+params[1]*(xdata-params[3])
     np.testing.assert_allclose(observed.get_ydata(), (d.y[0]-baseline)/params[2]/d.dv[0], atol=1e-14)
+    posterior = fig.axes[0].lines[4:-1]
+    assert len(posterior) == len(local)
+    for draw_local, draw_shape in zip(local[:, 0], shape[:, 0]):
+        predicted = prediction(x, d.dv[0], draw_local, draw_shape, tophat=tophat)
+        expected = (predicted-continuum)/params[2]/d.dv[0]
+        assert sum(np.allclose(curve.get_ydata(), expected, atol=1e-14)
+                   for curve in posterior) == 1
     plt.close(fig)
 
 
