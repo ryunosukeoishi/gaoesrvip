@@ -15,7 +15,8 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
-notebook = ["ipykernel>=6"]
+analysis = ["corner>=2.2"]
+notebook = ["ipykernel>=6", "corner>=2.2"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gaoesrvip"]
