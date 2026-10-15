@@ -48,8 +48,8 @@ def read_ecidentify(path):
     return WavelengthSolution(*records[-1], catalog)
 
 
-def _model(x, bkg, slope, flux, center, s1, fraction, s2, delta):
-    return bkg+slope*(x-center)+flux*pixel_mass(x-center, [s1, fraction, s2, delta], 1.)
+def _model(x, bkg, slope, flux, center, s1, fraction2, s2, delta):
+    return bkg+slope*(x-center)+flux*pixel_mass(x-center, [s1, fraction2, s2, delta], 1.)
 
 
 def _width(shape):
@@ -108,8 +108,22 @@ def _screen_fit(x, y, x0, seed):
 def select_lines(path, wavelength_file, *, orders, gain, read_noise, order_offset=100,
                  half_window=7, saturation=51000, blend_guard=2., resolving_power=65000,
                  max_center_shift=1., max_width_error=.1):
-    """Select isolated, unsaturated lines with reliable centers and widths."""
+    """Select isolated, unsaturated lines with reliable centers and widths.
+
+    Each order's metadata records input paths and all selection arguments.
+    """
     from astropy.io import fits
+    orders = list(orders)
+    selection = dict(orders=np.asarray(orders).tolist(), gain=gain, read_noise=read_noise,
+                     order_offset=order_offset, half_window=half_window, saturation=saturation,
+                     blend_guard=blend_guard, resolving_power=resolving_power,
+                     max_center_shift=max_center_shift, max_width_error=max_width_error)
+    # NumPy scalar arguments are common in notebooks; store JSON-native values.
+    selection = {key: value.item() if isinstance(value, np.generic) else value
+                 for key, value in selection.items()}
+    metadata = dict(input_files=dict(spectrum=str(Path(path).resolve()),
+                                    wavelength_solution=str(Path(wavelength_file).resolve())),
+                    selection=selection)
     solution = read_ecidentify(wavelength_file)
     flux = np.asarray(fits.getdata(path), float)
     table = solution.features.copy()
@@ -159,5 +173,5 @@ def select_lines(path, wavelength_file, *, orders, gain, read_noise, order_offse
         data.append(OrderData(order, x, y, noise, mask, group.pixel.to_numpy(),
             C_KMS*np.abs(group.dispersion.to_numpy())/group.fit_wave.to_numpy(),
             np.arange(n).astype(str), group.fit_wave.to_numpy(), group.lab_wave.to_numpy(),
-            table_pixel=group.table_pixel.to_numpy()))
+            table_pixel=group.table_pixel.to_numpy(), metadata=metadata))
     return data
