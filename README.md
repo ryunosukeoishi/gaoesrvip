@@ -44,12 +44,18 @@ fits, still uses the central spectrum and its database:
 data = select_lines(
     "data/ThAr20251107_2.center.fits",
     "data/ecThAr20251107_2.center",
-    fit_spectrum="ThAr20251107_2_ecfw.fits",
+    fit_spectrum="data/ThAr20251107_2_ecfw.fits",
     orders=[104, 105], gain=1.935, read_noise=4.0, saturation=5000,
 )
 individual = fit(data, mode="individual", model="lab_centered", tophat=False)
 common = fit(data, mode="common", model="lab_centered", tophat=False)
 ```
+
+The bundled `data/ThAr20251107_2_ecfw.fits` is the same lamp exposure as the
+central example, extracted over offsets -54 to +53 (107 one-pixel strips) and
+combined with the archived position-dependent wavelength solutions using
+`dispcor(log=no)` and `scombine(combine="sum", reject="none")`, without per-strip
+flat division.
 
 The summed input must be a 2D IRAF multispec FITS with unshifted linear wavelength
 coordinates and a positive integer `NCOMBINE`. Apertures are matched using
