@@ -1,6 +1,6 @@
 # gaoesrvip
 
-Infer two-Gaussian instrumental profiles (IP) from GAOES-RV ThAr spectra using NumPyro NUTS.
+Infer two-Gaussian instrumental profiles (IP) from native or wavelength-calibrated, summed GAOES-RV ThAr spectra using NumPyro NUTS.
 
 ## Installation
 
@@ -35,6 +35,42 @@ common.parameters
 common.plot_lines()
 common.overlay()
 ```
+
+To fit a ThAr spectrum processed with `dispcor` and `scombine`, add
+`fit_spectrum`. Line selection, including the saturation threshold and preliminary
+fits, still uses the central spectrum and its database:
+
+```python
+data = select_lines(
+    "data/ThAr20251107_2.center.fits",
+    "data/ecThAr20251107_2.center",
+    fit_spectrum="ThAr20251107_2_ecfw.fits",
+    orders=[104, 105], gain=1.935, read_noise=4.0, saturation=5000,
+)
+individual = fit(data, mode="individual", model="lab_centered", tophat=False)
+common = fit(data, mode="common", model="lab_centered", tophat=False)
+```
+
+The summed input must be a 2D IRAF multispec FITS with unshifted linear wavelength
+coordinates and a positive integer `NCOMBINE`. Apertures are matched using
+`order_offset`, not the FITS beam numbers. The selected central windows are mapped
+to the sum's velocity sampling, rounding outward to whole output pixels. No extra
+interpolation or screening fit is applied. Uncovered windows or windows with fewer
+than nine usable samples are skipped with a warning; finite zero and negative flux
+samples are retained. FITS padding outside each spectrum's WCS length is excluded.
+
+For sums, the diagonal variance in ADU squared is approximated as
+`max(flux, 0)/gain + NCOMBINE*(read_noise/gain)**2`. This uses the global count even
+near edges with fewer contributors and ignores interpolation weights and pixel
+correlations. Native spectra use the same expression with a count of one.
+`gain` is in electrons/ADU and `read_noise` in electrons. `saturation` is an ADU
+selection limit on the central input, not a test of other strips or the summed flux.
+
+Both inputs produce red-positive analysis coordinates. Decreasing-wavelength inputs
+are reversed without interpolation; `x`, `x0`, and `table_pixel` then refer to the
+redward analysis grid. Metadata records the mapping back to original input pixels:
+`original_pixel = original_pixel_offset + original_pixel_scale * x`.
+For a sum this maps to its FITS sampling, not to the raw CCD.
 
 - `individual`: infer a separate two-Gaussian profile for each line.
 - `common`: share the profile within each order. With the default model, fit background, slope, flux, and center for each line.
@@ -73,7 +109,7 @@ common.parameters
 This convenience function always fits `mode="common"`. Its defaults match the
 notebook: `model="lab_centered"`, `tophat=False`, `baseline_degree=1`, and
 `saturation=5000`. The lower-level `fit()` and `select_lines()` have different
-defaults for model, pixel integration, and saturation. Selection options such as
+defaults for model, pixel integration, and saturation. The optional `fit_spectrum` argument is also accepted. Selection options such as
 `half_window` and `max_width_error`, and fit options such as `baseline_degree`,
 `warmup`, `samples`, `chains`, and `seed`, can be supplied directly as keywords.
 
@@ -136,11 +172,11 @@ at the table wavelength and the slope remains in flux per pixel.
 
 The fixed coordinate is `v = (pixel - table_pixel) * dv`, using the existing local
 velocity scale in km/s per pixel. `table_pixel` comes from inverting the supplied
-wavelength solution at the tabulated wavelength. Since `dv` is positive, positive
-velocity follows increasing pixel number; it denotes a redshift only where
-wavelength increases with pixel number. No wavelength-solution coefficients are fitted.
+wavelength solution at the tabulated wavelength. The analysis grid increases with
+wavelength, so positive velocity denotes a redshift. `dv` remains the positive
+sampling width in km/s. No wavelength-solution coefficients are fitted.
 
-The new model uses independent uniform priors, with `d = median(dv)` within the order:
+The model uses independent uniform priors, with `d = median(dv)` within the order:
 
 | Parameter | Range |
 | --- | --- |
@@ -191,7 +227,7 @@ initial line screening, which continues to use a linear baseline.
 `center` for `free_centers` results and `quadratic` when `baseline_degree=2`.
 `R = c/FWHM` uses the two-Gaussian width excluding the pixel top-hat.
 In `free_centers`, the profile is `(1-f) N(v; 0, sigma1) + f N(v; delta, sigma2)`.
-The fitted `center` is the absolute pixel position of Gaussian 1, and
+The fitted `center` is Gaussian 1's position on the analysis grid, and
 `centroid_kms = f*delta` is relative to that center.
 In `lab_centered`, `parameters` also includes `mu1_kms` and the derived
 `mu2_kms = mu1_kms + delta_kms`; `centroid_kms = mu1_kms + f*delta_kms` is relative
@@ -292,6 +328,10 @@ from gaoesrvip import load_result
 restored = load_result("results/common")
 restored.metadata[104]
 ```
+
+For a summed fit, input paths also identify the central selection spectrum.
+Coordinate metadata specifies the redward grid and its original-pixel mapping;
+noise metadata records the count and diagonal approximation.
 
 Metadata is kept per order, so orders from different inputs or selection runs retain
 their own provenance. `common.metadata` returns a copy keyed by integer order number.

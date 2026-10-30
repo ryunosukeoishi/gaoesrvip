@@ -107,12 +107,18 @@ def _screen_fit(x, y, x0, seed):
 
 def select_lines(path, wavelength_file, *, orders, gain, read_noise, order_offset=100,
                  half_window=7, saturation=51000, blend_guard=2., resolving_power=65000,
-                 max_center_shift=1., max_width_error=.1):
+                 max_center_shift=1., max_width_error=.1, fit_spectrum=None):
     """Select isolated, unsaturated lines with reliable centers and widths.
 
-    Each order's metadata records input paths and all selection arguments.
+    Selection always uses path and its ecidentify database. Optional fit_spectrum
+    supplies a wavelength-calibrated IRAF linear multispec sum for fitting.
+    Returned coordinates increase redward; dv is a positive sampling width.
     """
     from astropy.io import fits
+    from .spectra import read_sum, cut_sum
+    summed = read_sum(fit_spectrum) if fit_spectrum is not None else None
+    if not np.isfinite(gain) or gain <= 0 or not np.isfinite(read_noise) or read_noise < 0:
+        raise ValueError("gain must be positive and read_noise nonnegative")
     orders = list(orders)
     selection = dict(orders=np.asarray(orders).tolist(), gain=gain, read_noise=read_noise,
                      order_offset=order_offset, half_window=half_window, saturation=saturation,
@@ -170,8 +176,22 @@ def select_lines(path, wavelength_file, *, orders, gain, read_noise, order_offse
             x[i, :count], y[i, :count] = xp, values
             noise[i, :count] = np.sqrt(np.maximum(values, 0)/gain+(read_noise/gain)**2)
             mask[i, :count] = noise[i, :count] > 0
-        data.append(OrderData(order, x, y, noise, mask, group.pixel.to_numpy(),
+        direction = np.sign(group.dispersion.to_numpy())
+        if not np.all(direction == direction[0]) or direction[0] == 0:
+            raise ValueError(f"Order {order}: dispersion must have a consistent nonzero sign")
+        reverse = bool(direction[0] < 0)
+        origin = flux.shape[1]+1 if reverse else 0
+        sign = -1 if reverse else 1
+        if reverse:
+            x = origin-x[:, ::-1]
+            y, noise, mask = y[:, ::-1], noise[:, ::-1], mask[:, ::-1]
+        order_metadata = dict(metadata, coordinate=dict(velocity_positive="red",
+            kind="native", original_pixel_scale=sign, original_pixel_offset=origin),
+            noise=dict(model="diagonal Poisson plus read noise", ncombine=1))
+        data.append(OrderData(order, x, y, noise, mask, origin+sign*group.pixel.to_numpy(),
             C_KMS*np.abs(group.dispersion.to_numpy())/group.fit_wave.to_numpy(),
             np.arange(n).astype(str), group.fit_wave.to_numpy(), group.lab_wave.to_numpy(),
-            table_pixel=group.table_pixel.to_numpy(), metadata=metadata))
+            table_pixel=origin+sign*group.table_pixel.to_numpy(), metadata=order_metadata))
+    if summed is not None:
+        data = cut_sum(data, summed, fit_spectrum, order_offset, gain, read_noise)
     return data

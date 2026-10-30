@@ -31,6 +31,9 @@ def test_selection_metadata_through_fit_and_roundtrip(tmp_path, monkeypatch):
         selection=dict(orders=[104, 105, 106], gain=1.935, read_noise=4., order_offset=100,
                        half_window=9, saturation=None, blend_guard=1.5, resolving_power=60000,
                        max_center_shift=.5, max_width_error=.05))
+    expected['coordinate'] = dict(velocity_positive='red', kind='native',
+                                  original_pixel_scale=1, original_pixel_offset=0)
+    expected['noise'] = dict(model='diagonal Poisson plus read noise', ncombine=1)
     assert [d.order for d in data] == [104, 105]
     assert all(d.metadata == expected for d in data)
     assert json.loads(json.dumps(data[0].metadata)) == expected
