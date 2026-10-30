@@ -58,6 +58,8 @@ def test_analysis_saves_result_and_passes_notebook_defaults_and_options(tmp_path
     thar, wavelength = tmp_path/'thar.fits', tmp_path/'wavelength.db'
     thar.touch()
     wavelength.touch()
+    summed = tmp_path/'sum.fits'
+    summed.touch()
     selected = [o.data for o in result.orders]
     calls = {}
 
@@ -76,7 +78,9 @@ def test_analysis_saves_result_and_passes_notebook_defaults_and_options(tmp_path
     output = tmp_path/'run'
     actual = analyze_thar_ip_2g(thar, wavelength, output, orders=[104, 105],
                                 gain=1.935, read_noise=4., half_window=9,
-                                warmup=10, samples=128, chains=2, seed=13, progress=False)
+                                warmup=10, samples=128, chains=2, seed=13, progress=False,
+                                fit_spectrum=summed)
+    assert calls['selection']['fit_spectrum'] == summed
     assert calls['selection']['saturation'] == 5000
     assert calls['selection']['half_window'] == 9
     assert calls['selection']['gain'] == 1.935

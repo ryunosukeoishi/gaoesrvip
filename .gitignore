@@ -15,3 +15,4 @@ results/
 # Pipeline outputs for the example notebook
 !/data/ThAr20251107_2.center.fits
 !/data/ecThAr20251107_2.center
+!/data/ThAr20251107_2_ecfw.fits

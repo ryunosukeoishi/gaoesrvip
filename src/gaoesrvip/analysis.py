@@ -74,6 +74,7 @@ def save_analysis_figures(result, output_dir, *, dpi=180):
 
 def analyze_thar_ip_2g(thar, wavelength_file, output_dir, *, orders, gain, read_noise,
                        saturation=5000, order_offset=100, half_window=7, blend_guard=2.,
+                       fit_spectrum=None,
                        resolving_power=65000, max_center_shift=1., max_width_error=.1,
                        model='lab_centered', tophat=False, baseline_degree=1,
                        warmup=500, samples=500, chains=1, seed=0, target_accept=.95,
@@ -84,6 +85,7 @@ def analyze_thar_ip_2g(thar, wavelength_file, output_dir, *, orders, gain, read_
     no pixel integration, a linear baseline, and saturation=5000. Supply
     orders, gain and read_noise for the input spectrum. Selection and sampling
     keywords have the same meaning as in select_lines() and fit().
+    fit_spectrum optionally supplies a wavelength-calibrated summed ThAr.
 
     output_dir must be empty or new. Input paths, the output directory and
     corner availability are checked before selection or MCMC. Tables, settings,
@@ -94,7 +96,10 @@ def analyze_thar_ip_2g(thar, wavelength_file, output_dir, *, orders, gain, read_
     """
     output = _empty_output_directory(output_dir)
     thar, wavelength_file = Path(thar).expanduser(), Path(wavelength_file).expanduser()
-    for path in (thar, wavelength_file):
+    inputs = [thar, wavelength_file]
+    if fit_spectrum is not None:
+        inputs.append(Path(fit_spectrum).expanduser())
+    for path in inputs:
         if not path.is_file():
             raise FileNotFoundError(f'Input file does not exist or is not a file: {path}')
     _require_corner()
@@ -104,6 +109,7 @@ def analyze_thar_ip_2g(thar, wavelength_file, output_dir, *, orders, gain, read_
         saturation=saturation, order_offset=order_offset, half_window=half_window,
         blend_guard=blend_guard, resolving_power=resolving_power,
         max_center_shift=max_center_shift, max_width_error=max_width_error,
+        fit_spectrum=fit_spectrum,
     )
     result = fit(
         data, mode='common', model=model, tophat=tophat, baseline_degree=baseline_degree,

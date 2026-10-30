@@ -1,4 +1,4 @@
-"""Selected ThAr cutouts; detector coordinates are in pixels."""
+"""Selected ThAr cutouts; coordinates and sampling widths are in analysis-grid pixels."""
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 import numpy as np
