@@ -56,7 +56,7 @@ def test_selection_reasons_and_cutout_extraction(tmp_path, monkeypatch):
     # Unused catalog neighbors still matter for blend screening.
     features = [[4, 105, x, wave, wave, 1, 1, used] for x, wave, used in
                 [(25, 5000, 1), (50, 4999, 1), (53, 4999.01, 0),
-                 (75, 5002, 1), (100, 5004, 1), (2, 5006, 1)]]
+                 (75, 5002, 1), (100, 5001, 1), (2, 5006, 1)]]
     p = tmp_path/'ecthar'
     p.write_text(database(features, constant=525000))
     image = np.full((4, 120), 5.)
@@ -66,7 +66,7 @@ def test_selection_reasons_and_cutout_extraction(tmp_path, monkeypatch):
     def screen(x, y, x0, seed):
         return 4., 2. if y.max() == 30 else 0., .03
     monkeypatch.setattr('gaoesrvip.selection._screen_fit', screen)
-    data = select_lines(thar, p, orders=[104], gain=2, read_noise=4, saturation=500)
+    data = select_lines(thar, p, orders=[104], gain=2, read_noise=4, saturation=500, screen_fit=True)
     d = data[0]
     assert d.order == 104 and list(d.line_ids) == ['0']
     assert d.table_pixel[0] == pytest.approx(60.5)
@@ -75,6 +75,8 @@ def test_selection_reasons_and_cutout_extraction(tmp_path, monkeypatch):
     default_data = select_lines(thar, p, orders=[104], gain=2, read_noise=4,
                                 half_window=5, saturation=500)
     assert isinstance(default_data, list)
+    assert len(default_data[0].x0) == 2  # Default skips only the fit-quality cut.
+    assert default_data[0].metadata['selection']['screen_fit'] is False
     np.testing.assert_array_equal(default_data[0].x[0], np.arange(20, 31))
     from gaoesrvip import fit
     def sample(d, mode, tophat, bounds, local, shape, **kwargs):
@@ -91,6 +93,21 @@ def test_selection_reasons_and_cutout_extraction(tmp_path, monkeypatch):
     np.testing.assert_array_equal(pipeline_data[0].y, default_data[0].y)
     with pytest.raises(FileNotFoundError):
         select_lines(thar, p, orders=[104], gain=2, read_noise=4)
+
+
+def test_default_does_not_call_screen_fit(tmp_path, monkeypatch):
+    p = tmp_path/'ec'
+    p.write_text(database([[4, 105, 60.5, 5000, 5000, 1, 1, 1]], constant=525000))
+    image = np.full((4, 120), 5.)
+    image[3, 60] = 100.
+    path = tmp_path/'center.fits'
+    fits.writeto(path, image)
+    def forbidden(*args):
+        raise AssertionError('screen fit must be opt-in')
+    monkeypatch.setattr('gaoesrvip.selection._screen_fit', forbidden)
+    d = select_lines(path, p, orders=[104], gain=2., read_noise=4.,
+                     max_center_shift=0., max_width_error=0.)
+    assert len(d[0].x0) == 1
 
 
 @pytest.mark.parametrize('tophat', [True, False])

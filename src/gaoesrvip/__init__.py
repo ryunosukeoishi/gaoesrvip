@@ -5,8 +5,9 @@ from .fitting import fit
 from .results import FitResult, load_result
 from .analysis import analyze_thar_ip_2g, save_analysis_figures
 from .models import density, pixel_mass, profile_fwhm
+from .chebyshev import cumulants
 
 __version__ = "0.1.0"
 __all__ = ["read_ecidentify", "select_lines", "OrderData", "fit",
            "FitResult", "load_result", "density", "pixel_mass", "profile_fwhm",
-           "analyze_thar_ip_2g", "save_analysis_figures"]
+           "analyze_thar_ip_2g", "save_analysis_figures", "cumulants"]

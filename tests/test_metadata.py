@@ -30,7 +30,7 @@ def test_selection_metadata_through_fit_and_roundtrip(tmp_path, monkeypatch):
         input_files=dict(spectrum=str(thar.resolve()), wavelength_solution=str(wavelength.resolve())),
         selection=dict(orders=[104, 105, 106], gain=1.935, read_noise=4., order_offset=100,
                        half_window=9, saturation=None, blend_guard=1.5, resolving_power=60000,
-                       max_center_shift=.5, max_width_error=.05))
+                       max_center_shift=.5, max_width_error=.05, screen_fit=False))
     expected['coordinate'] = dict(velocity_positive='red', kind='native',
                                   original_pixel_scale=1, original_pixel_offset=0)
     expected['noise'] = dict(model='diagonal Poisson plus read noise', ncombine=1)
@@ -44,7 +44,7 @@ def test_selection_metadata_through_fit_and_roundtrip(tmp_path, monkeypatch):
     other = select_lines(thar, wavelength, orders=[105], gain=2., read_noise=3.)[0]
     assert other.metadata['selection'] == dict(orders=[105], gain=2., read_noise=3.,
         order_offset=100, half_window=7, saturation=51000, blend_guard=2.,
-        resolving_power=65000, max_center_shift=1., max_width_error=.1)
+        resolving_power=65000, max_center_shift=1., max_width_error=.1, screen_fit=False)
 
     # The test checks metadata transport, without numerical fitting or sampling.
     def initialize(d, mode, tophat, max_nfev, model, baseline_degree):

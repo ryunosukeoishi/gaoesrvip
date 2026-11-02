@@ -169,19 +169,37 @@ def _sample(data, mode, tophat, bounds, local, shape, *, warmup, samples, chains
     return draws['local'], draws['shape']
 
 
-def fit(input_data, *, mode="common", model="free_centers", tophat=True, baseline_degree=1,
+def fit(input_data, *, mode="common", model=None, tophat=None, baseline_degree=1,
         warmup=500, samples=500, chains=1, seed=0, target_accept=0.95,
-        max_tree_depth=10, max_nfev=2000, progress=True):
+        max_tree_depth=10, max_nfev=2000, progress=True, degree=2, nuts=None, maxiter=10000):
     """Fit 2G profiles with free line centers or a lab-referenced, mean-ordered shape.
 
     lab_centered fixes the wavelength solution and shares all five profile
     parameters in common mode. Baseline coefficients and flux remain local.
     baseline_degree=1 fits bkg+slope*u; 2 adds quadratic*u**2, with u in pixels.
+    mode='chebyshev' fits a deterministic wavelength-dependent 2G IP and a
+    whole-line residual mixture. Independent LS comparison fits are retained.
+    It defaults to lab_centered, tophat=False, and MAP only; nuts=True adds
+    sampling initialized at the MAP. degree is user-selected, with no search.
+    Existing individual/common modes keep their NUTS inference and defaults
+    (free_centers, tophat=True). nuts is only an option for chebyshev mode.
     """
     from .results import FitResult, OrderFit
-    if mode not in ("individual", "common"):
-        raise ValueError("mode must be individual/common")
+    if mode not in ("individual", "common", "chebyshev"):
+        raise ValueError("mode must be individual/common/chebyshev")
+    model = ('lab_centered' if mode == 'chebyshev' else 'free_centers') if model is None else model
+    tophat = (mode != 'chebyshev') if tophat is None else tophat
     parameter_names(model, baseline_degree)
+    if mode == 'chebyshev':
+        if model != 'lab_centered':
+            raise ValueError('Chebyshev mixture requires model=lab_centered')
+        from .spectral_mixture import fit_chebyshev
+        return fit_chebyshev(input_data, degree=degree, nuts=False if nuts is None else nuts,
+            tophat=tophat, baseline_degree=baseline_degree, warmup=warmup, samples=samples,
+            chains=chains, seed=seed, target_accept=target_accept, max_tree_depth=max_tree_depth,
+            max_nfev=max_nfev, maxiter=maxiter, progress=progress)
+    if nuts is not None:
+        raise ValueError('nuts is only configurable for mode=chebyshev; individual/common use NUTS')
     if isinstance(input_data, OrderData):
         data = [input_data]
     else:

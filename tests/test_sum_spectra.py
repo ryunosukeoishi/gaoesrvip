@@ -42,7 +42,7 @@ def test_sum_uses_central_selection_and_redward_samples(tmp_path, monkeypatch, r
         calls.append(y.copy())
         return 4., 0., .02
     monkeypatch.setattr('gaoesrvip.selection._screen_fit', screen)
-    kw = dict(orders=[104], gain=1.935, read_noise=4., saturation=5000)
+    kw = dict(orders=[104], gain=1.935, read_noise=4., saturation=5000, screen_fit=True)
     native = select_lines(center, db, **kw)[0]
     assert native.metadata['coordinate']['velocity_positive'] == 'red'
     np.testing.assert_allclose((native.x[0]-native.table_pixel[0])*native.dv[0], np.sort(v[52:68]), atol=1e-8)

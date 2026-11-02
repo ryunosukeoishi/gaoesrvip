@@ -1,6 +1,6 @@
 # gaoesrvip
 
-Infer two-Gaussian instrumental profiles (IP) from native or wavelength-calibrated, summed GAOES-RV ThAr spectra using NumPyro NUTS.
+Infer two-Gaussian instrumental profiles (IP) from native or wavelength-calibrated, summed GAOES-RV ThAr spectra. Common/individual fits use NumPyro NUTS; Chebyshev spectral-mixture fits use optimization with optional NUTS.
 
 ## Installation
 
@@ -37,8 +37,8 @@ common.overlay()
 ```
 
 To fit a ThAr spectrum processed with `dispcor` and `scombine`, add
-`fit_spectrum`. Line selection, including the saturation threshold and preliminary
-fits, still uses the central spectrum and its database:
+`fit_spectrum`. Line selection, including the saturation threshold and optional
+screening fit, uses the central spectrum and its database:
 
 ```python
 data = select_lines(
@@ -80,13 +80,97 @@ For a sum this maps to its FITS sampling, not to the raw CCD.
 
 - `individual`: infer a separate two-Gaussian profile for each line.
 - `common`: share the profile within each order. With the default model, fit background, slope, flux, and center for each line.
+- `chebyshev`: fit a smooth wavelength-dependent IP with a whole-line spectral mixture; retain independent least-squares comparison points.
 - `tophat=True`: integrate over a one-pixel top-hat. `False`: evaluate at pixel centers.
 
-`select_lines()` excludes blends, saturated lines, and incomplete cutouts, then performs
-one two-Gaussian fit per candidate to check the center shift and width uncertainty.
+`select_lines()` defaults to `screen_fit=False`: database, blend, saturation, finite-data,
+and usable-window checks remain, while preliminary fit-quality cuts are skipped.
+Set `screen_fit=True` to restore the central-spectrum 2G screening fit and its
+`max_center_shift=1.` pixel and `max_width_error=.1` FWHM-relative-uncertainty cuts.
+The screening fit uses optimization and covariance propagation, not NUTS.
 Physical orders are `aperture + order_offset`.
 Set the gain, read noise, and `order_offset` for your input data.
-`fit()` defaults to `warmup=500, samples=500, chains=1` and prints the MCMC summary after sampling.
+Individual/common `fit()` defaults to `warmup=500, samples=500, chains=1` and prints the MCMC summary after sampling.
+
+## Chebyshev spectral mixture
+
+See [thar_ip_chebyshev_mixture_order104.ipynb](examples/thar_ip_chebyshev_mixture_order104.ipynb)
+for an executed ecfw example. Choose the degree yourself; the notebook defaults to
+degree 4, `screen_fit=False`, `blend_guard=4`, and `nuts=False`.
+
+```python
+chebyshev = fit(data, mode="chebyshev", degree=4, nuts=False)
+# Chebyshev defaults: model="lab_centered", tophat=False, baseline_degree=1.
+# Each line is first optimized independently (three starts, no NUTS).
+# The joint fit uses spectra directly; individual points are comparison data.
+
+chebyshev.plot_lines(include_baseline=True)  # data, components, residuals, P(out)
+chebyshev.overlay(min_inlier_probability=0.5)  # strict P(in) > 0.5, display only
+chebyshev.plot_cumulants(ci=0.68, zoom_outliers=True)
+chebyshev.line_membership
+chebyshev.individual_parameters
+chebyshev.residual_summary()
+chebyshev.diagnostics
+
+chebyshev.save("results/chebyshev", figures=True)
+restored = load_result("results/chebyshev")  # from gaoesrvip import load_result
+restored.plot_cumulants()  # no refitting or sampling
+```
+
+Set `nuts=True, warmup=500, samples=500, chains=2` in the same `fit` call to
+sample the joint model initialized at its MAP. Individual comparison points remain
+least-squares estimates. Inspect `diagnostics` for divergences, tree-depth hits,
+R-hat and effective sample size before interpreting a short NUTS run.
+With NUTS, the smooth central curve uses posterior-median coefficients, and
+pointwise credible bands are computed by transforming every joint posterior draw.
+MAP-only results have no posterior bands; interval-table entries are NaN.
+The saved format stores the MAP, actual posterior draws when present, independent
+fit points/status, membership, priors, observations, and diagnostics together.
+
+All five coordinates `(mu1, log(delta), log(sigma1), log(sigma2), logit(fraction2))`
+are degree-`d` Chebyshev polynomials on each order's laboratory-wavelength range,
+mapped to [-1, 1]. Each line's IP equals the polynomial prediction exactly.
+Background, slope and total flux (and quadratic background when requested) are
+local parameters. A failed individual optimization is reported, not a selection cut.
+
+The model mixes **whole spectral windows** after summing their pixel log densities.
+Both components use the same Chebyshev IP. Pixel variances are the supplied noise
+variance plus `(observed_peak * s_in)**2` or `(observed_peak * s_out)**2`.
+The observed peak is fixed from the data after subtracting a median edge baseline;
+fitted flux cannot change this normalization. The additional scales describe
+model discrepancy, not detector noise alone. `P(inlier)` is conditional on the MAP
+or averaged over posterior draws for NUTS. It is not a fixed residual-tolerance cut
+for comparing polynomial degrees.
+
+Optimization and NUTS use the same priors. For `r = median(dv)`, the coefficient
+intercept means are `(0, log(1.5r), log(1.2r), log(1.2r), 0)` with SDs
+`(2r, 1, 1, 1, 2)`; term `k >= 1` has zero mean and SDs
+`(r, .5, .5, .5, 1) / k**2`. The outlier fraction has a Beta(1,4) prior.
+`s_in = .01 exp(a)`, `s_out = hypot(s_in, .05 exp(b))`, with independent
+`a,b ~ Normal(0,.7)`. Local parameter bounds are the existing line-fit bounds.
+An initial regularized least-squares fit uses a 2%-of-peak residual floor only to
+initialize MAP; it is not a fixed likelihood scale. This is a MAP workflow, rather
+than the unregularized maximum-likelihood fits in the experimental degree-search notebook.
+
+`plot_cumulants()` shows intrinsic κ1–κ5, excluding pixel integration, with the
+individual points colored by spectral `P(inlier)`. Display zoom uses the curve
+and non-extreme inlier points; triangles identify clipped points. Set
+`zoom_outliers=False` to show the full range. Independent points have no error bars.
+`residual_summary()` additionally exposes `observed_peak`, `rms_observed_peak_percent`
+and membership; the existing `rms_peak_percent` column retains its fitted-model-peak
+normalization. Both RMS metrics are unweighted diagnostics.
+
+```python
+import numpy as np
+from gaoesrvip import cumulants
+wave = np.linspace(*chebyshev.orders[0].chebyshev.domain, 1000)
+shapes = chebyshev.predict_ip(wave, order=104)  # (draw, wavelength, 5); MAP: one estimate
+kappa = cumulants(shapes)                     # (draw, wavelength, 5), units (km/s)**k
+```
+
+`analyze_thar_ip_2g(..., mode="chebyshev", degree=4, nuts=False)` also runs the
+complete selection/fit/save workflow. Its figures include all lines, all-line and
+inlier overlays, cumulants, and residual summaries. It does not require `corner`.
 
 ## Run and save the complete analysis
 
@@ -112,7 +196,7 @@ common = analyze_thar_ip_2g(
 common.parameters
 ```
 
-This convenience function always fits `mode="common"`. Its defaults match the
+This convenience function defaults to `mode="common"`. Its profile defaults match the
 notebook: `model="lab_centered"`, `tophat=False`, `baseline_degree=1`, and
 `saturation=5000`. The lower-level `fit()` and `select_lines()` have different
 defaults for model, pixel integration, and saturation. The optional `fit_spectrum` argument is also accepted. Selection options such as
@@ -149,7 +233,7 @@ and preserves figures already open in a notebook.
 
 ## Model choice
 
-`fit(..., model="free_centers")` is the default and preserves the original model and
+For individual/common modes, `fit(..., model="free_centers")` is the default and preserves the original model and
 priors. Gaussian 1 has a free pixel center for each line, `delta_kms` can have either
 sign, and `fraction2` lies between 0.001 and 0.49. In common mode the four shape
 parameters are shared, while line centers remain independent.

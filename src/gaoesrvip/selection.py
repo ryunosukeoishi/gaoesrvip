@@ -107,11 +107,13 @@ def _screen_fit(x, y, x0, seed):
 
 def select_lines(path, wavelength_file, *, orders, gain, read_noise, order_offset=100,
                  half_window=7, saturation=51000, blend_guard=2., resolving_power=65000,
-                 max_center_shift=1., max_width_error=.1, fit_spectrum=None):
-    """Select isolated, unsaturated lines with reliable centers and widths.
+                 max_center_shift=1., max_width_error=.1, fit_spectrum=None, screen_fit=False):
+    """Select isolated, unsaturated lines, optionally screening centers and widths.
 
     Selection always uses path and its ecidentify database. Optional fit_spectrum
     supplies a wavelength-calibrated IRAF linear multispec sum for fitting.
+    screen_fit=False skips the preliminary fit and ignores max_center_shift and
+    max_width_error. Catalog, blend, saturation and usable-cutout checks remain.
     Returned coordinates increase redward; dv is a positive sampling width.
     """
     from astropy.io import fits
@@ -123,7 +125,8 @@ def select_lines(path, wavelength_file, *, orders, gain, read_noise, order_offse
     selection = dict(orders=np.asarray(orders).tolist(), gain=gain, read_noise=read_noise,
                      order_offset=order_offset, half_window=half_window, saturation=saturation,
                      blend_guard=blend_guard, resolving_power=resolving_power,
-                     max_center_shift=max_center_shift, max_width_error=max_width_error)
+                     max_center_shift=max_center_shift, max_width_error=max_width_error,
+                     screen_fit=screen_fit)
     # NumPy scalar arguments are common in notebooks; store JSON-native values.
     selection = {key: value.item() if isinstance(value, np.generic) else value
                  for key, value in selection.items()}
@@ -148,12 +151,14 @@ def select_lines(path, wavelength_file, *, orders, gain, read_noise, order_offse
         if (nearest <= blend_guard*C_KMS/resolving_power or not np.isfinite(y).all()
                 or len(x) < 9 or (saturation is not None and np.any(y >= saturation))):
             continue
-        try:
-            width, peak, error = _screen_fit(x-x0, y, 0., int(ap*10000000+round(x0*1000)))
-        except (ValueError, RuntimeError, FloatingPointError, np.linalg.LinAlgError):
-            continue
-        if not np.isfinite([width, peak, error]).all() or abs(peak) > max_center_shift or error > max_width_error:
-            continue
+        if screen_fit:
+            try:
+                width, peak, error = _screen_fit(x-x0, y, 0., int(ap*10000000+round(x0*1000)))
+            except (ValueError, RuntimeError, FloatingPointError, np.linalg.LinAlgError):
+                continue
+            if (not np.isfinite([width, peak, error]).all()
+                    or abs(peak) > max_center_shift or error > max_width_error):
+                continue
         wave = float(solution.wavelength(x0, row.db_order))
         dispersion = float(solution.dispersion(x0, row.db_order))
         target = lambda pixel: float(solution.wavelength(pixel, row.db_order))-row.lab_wave

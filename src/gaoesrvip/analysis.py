@@ -1,4 +1,4 @@
-"""Run the common-IP notebook workflow and save all its diagnostic figures."""
+"""Run common or Chebyshev IP workflows and save their diagnostic figures."""
 from dataclasses import replace
 from pathlib import Path
 
@@ -28,21 +28,25 @@ def _require_corner():
 
 
 def save_analysis_figures(result, output_dir, *, dpi=180):
-    """Save every diagnostic figure from a common fit, without fitting again.
+    """Save common or Chebyshev diagnostic figures, without fitting again.
 
     output_dir is the figure directory itself and must be empty or new.
     Saves all pages of line fits in input flux units (including the baseline),
     an overlay, one corner plot per order, and the per-line residual summary.
     All figures are PNGs. Only figures created here are closed; the caller's
     existing figures and interactive plotting state are preserved.
-    Requires the optional ``analysis`` dependencies. Returns the output Path.
+    Common fits require the optional ``analysis`` dependencies. Chebyshev fits
+    save memberships in line-panel titles, filtered/all overlays and cumulants
+    (with credible intervals for NUTS), and do not require corner.
+    Returns the output Path.
     """
-    if result.settings['mode'] != 'common':
-        raise ValueError('save_analysis_figures requires mode=common')
+    chebyshev = result.settings['mode'] == 'chebyshev'
+    if result.settings['mode'] not in ('common', 'chebyshev'):
+        raise ValueError('save_analysis_figures requires mode=common or chebyshev')
     if not result.orders:
         raise ValueError('No orders to plot')
     output = _empty_output_directory(output_dir)
-    corner = _require_corner()
+    corner = None if chebyshev else _require_corner()
     import matplotlib.pyplot as plt
 
     output.mkdir(parents=True, exist_ok=True)
@@ -58,12 +62,18 @@ def save_analysis_figures(result, output_dir, *, dpi=180):
                 single_order = replace(result, orders=[order])
                 for page, fig in enumerate(single_order.plot_lines(include_baseline=True), 1):
                     save(fig, f'lines_order_{order.data.order}_{page:03d}')
-            save(result.overlay(), 'overlay')
-            for order in result.orders:
-                fig = corner.corner(order.shape_samples, labels=order.shape_names,
-                                    quantiles=[.16, .5, .84], show_titles=True)
-                fig.suptitle(f'Order {order.data.order}', y=1.02)
-                save(fig, f'corner_order_{order.data.order}')
+            if chebyshev:
+                save(result.overlay(), 'overlay_all')
+                if (result.line_membership.inlier_probability > .5).any():
+                    save(result.overlay(min_inlier_probability=.5), 'overlay')
+                save(result.plot_cumulants(), 'cumulants')
+            else:
+                save(result.overlay(), 'overlay')
+                for order in result.orders:
+                    fig = corner.corner(order.shape_samples, labels=order.shape_names,
+                                        quantiles=[.16, .5, .84], show_titles=True)
+                    fig.suptitle(f'Order {order.data.order}', y=1.02)
+                    save(fig, f'corner_order_{order.data.order}')
             save(result.plot_residual_summary(), 'residual_summary')
         finally:
             # Also close figures created by a plotting function that raised.
@@ -78,8 +88,9 @@ def analyze_thar_ip_2g(thar, wavelength_file, output_dir, *, orders, gain, read_
                        resolving_power=65000, max_center_shift=1., max_width_error=.1,
                        model='lab_centered', tophat=False, baseline_degree=1,
                        warmup=500, samples=500, chains=1, seed=0, target_accept=.95,
-                       max_tree_depth=10, max_nfev=2000, progress=True):
-    """Select ThAr lines, fit a common two-Gaussian IP, and save results and figures.
+                       max_tree_depth=10, max_nfev=2000, progress=True,
+                       mode='common', screen_fit=False, degree=2, nuts=None, maxiter=10000):
+    """Select ThAr lines, fit common or Chebyshev 2G IPs, and save results/figures.
 
     Defaults match ``thar_ip_analysis_for_jaxstar.ipynb``: lab_centered,
     no pixel integration, a linear baseline, and saturation=5000. Supply
@@ -93,8 +104,14 @@ def analyze_thar_ip_2g(thar, wavelength_file, output_dir, *, orders, gain, read_
     notebook figures are saved under output_dir/figures. Numerical results are
     saved before plotting so they remain available if figure generation fails.
     Requires the optional ``analysis`` dependencies. Returns the FitResult.
+    mode='chebyshev' includes independent optimization points and a spectral
+    mixture MAP fit; nuts=True optionally adds a posterior and credible bands.
+    screen_fit=False is the selection default; no fit-quality cuts are applied.
+    Chebyshev figures do not require corner.
     """
     output = _empty_output_directory(output_dir)
+    if mode not in ('common', 'chebyshev'):
+        raise ValueError('analyze_thar_ip_2g mode must be common or chebyshev')
     thar, wavelength_file = Path(thar).expanduser(), Path(wavelength_file).expanduser()
     inputs = [thar, wavelength_file]
     if fit_spectrum is not None:
@@ -102,7 +119,8 @@ def analyze_thar_ip_2g(thar, wavelength_file, output_dir, *, orders, gain, read_
     for path in inputs:
         if not path.is_file():
             raise FileNotFoundError(f'Input file does not exist or is not a file: {path}')
-    _require_corner()
+    if mode == 'common':
+        _require_corner()
     output.mkdir(parents=True, exist_ok=True)
     data = select_lines(
         thar, wavelength_file, orders=orders, gain=gain, read_noise=read_noise,
@@ -110,12 +128,15 @@ def analyze_thar_ip_2g(thar, wavelength_file, output_dir, *, orders, gain, read_
         blend_guard=blend_guard, resolving_power=resolving_power,
         max_center_shift=max_center_shift, max_width_error=max_width_error,
         fit_spectrum=fit_spectrum,
+        screen_fit=screen_fit,
     )
+    mode_options = dict(degree=degree, nuts=nuts, maxiter=maxiter) if mode == 'chebyshev' else {}
     result = fit(
-        data, mode='common', model=model, tophat=tophat, baseline_degree=baseline_degree,
+        data, mode=mode, model=model, tophat=tophat, baseline_degree=baseline_degree,
         warmup=warmup, samples=samples, chains=chains, seed=seed,
         target_accept=target_accept, max_tree_depth=max_tree_depth,
         max_nfev=max_nfev, progress=progress,
+        **mode_options,
     )
     result.save(output, figures=False)
     save_analysis_figures(result, output/'figures')
