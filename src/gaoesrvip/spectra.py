@@ -1,4 +1,4 @@
-"""Read wavelength-calibrated IRAF sums and prepare redward line coordinates."""
+"""Read wavelength-calibrated FITS/pickle sums and prepare redward coordinates."""
 from copy import deepcopy
 from pathlib import Path
 import re
@@ -9,18 +9,51 @@ from .data import OrderData
 from .models import C_KMS
 
 
+def _read_pickle_sum(path):
+    """Read a trusted local ThAr pickle containing a DataFrame and FITS header."""
+    import pandas as pd
+    payload = pd.read_pickle(path)
+    if not isinstance(payload, dict) or not {'data', 'header'} <= payload.keys():
+        raise ValueError('ThAr pickle must contain data and header')
+    table, header = payload['data'], payload['header']
+    if (not isinstance(table, pd.DataFrame) or not table.columns.is_unique
+            or not {'order', 'lam', 'flux'} <= set(table.columns)):
+        raise ValueError('ThAr pickle data must be a DataFrame with order, lam and flux columns')
+    if not isinstance(header, (dict, fits.Header)):
+        raise ValueError('ThAr pickle header must be a FITS Header or dictionary')
+    if (table.empty or not pd.api.types.is_integer_dtype(table['order'])
+            or table['order'].isna().any()):
+        raise ValueError('ThAr pickle order must contain zero-based integer row indices')
+    groups = list(table.groupby('order', sort=True))
+    if [index for index, _ in groups] != list(range(len(groups))):
+        raise ValueError('ThAr pickle order must contain consecutive zero-based row indices')
+    wave = [group['lam'].to_numpy(dtype=float) for _, group in groups]
+    flux = [group['flux'].to_numpy(dtype=float) for _, group in groups]
+    return flux, wave, header
+
+
 def read_sum(path):
-    """Read unshifted linear multispec WCS and its global NCOMBINE count."""
-    flux, header = fits.getdata(Path(path).expanduser(), header=True)
+    """Read a FITS or ThAr .pkl/.pickle sum and its global NCOMBINE count.
+
+    Pickles use data.order as the zero-based multispec row, data.lam as the
+    wavelength, and data.flux (not fflux). The header supplies the aperture and
+    valid length; padded tails are discarded before wavelength validation.
+    """
+    path = Path(path).expanduser()
+    wavelength = None
+    if path.suffix.lower() in ('.pkl', '.pickle'):
+        flux, wavelength, header = _read_pickle_sum(path)
+    else:
+        flux, header = fits.getdata(path, header=True)
+        if flux.ndim != 2:
+            raise ValueError('Summed spectrum must be a 2D IRAF multispec image')
     total = header.get('NCOMBINE')
     if (not isinstance(total, (int, float)) or not np.isfinite(total)
             or total < 1 or total != int(total)):
         raise ValueError('Summed spectrum requires a positive integer NCOMBINE')
-    if flux.ndim != 2:
-        raise ValueError('Summed spectrum must be a 2D IRAF multispec image')
     wat = ''.join(str(header[k]).ljust(68) for k in sorted(header) if k.startswith('WAT2_'))
     records = re.findall(r'spec(\d+)\s*=\s*"([^"]+)"', wat)
-    if len(records) != flux.shape[0]:
+    if len(records) != len(flux):
         raise ValueError('Incomplete IRAF multispec wavelength header')
     spectra, rows = {}, set()
     for index, record in records:
@@ -33,16 +66,21 @@ def read_sum(path):
         row, size = int(index)-1, int(values[5])
         start, step = float(values[3]), float(values[4])
         if (row in rows or ap in spectra or not 0 <= row < len(flux)
-                or not 1 < size <= flux.shape[1] or not np.isfinite([start, step]).all()
+                or not 1 < size <= len(flux[row]) or not np.isfinite([start, step]).all()
                 or step == 0):
             raise ValueError('Invalid or duplicate multispec spectrum record')
         wave = start+np.arange(size)*step
+        if wavelength is not None:
+            supplied = wavelength[row][:size]
+            if not np.allclose(supplied, wave, rtol=0, atol=1e-8):
+                raise ValueError(f'ThAr pickle order {row}: lam does not match the unshifted linear WCS')
+            wave = supplied
         if np.any(wave <= 0):
             raise ValueError('Wavelengths must be positive')
         reverse = step < 0
         spectra[ap] = (wave[::-1] if reverse else wave,
-                       np.asarray(flux[row, :size], float)[::-1] if reverse else
-                       np.asarray(flux[row, :size], float),
+                       np.asarray(flux[row][:size], float)[::-1] if reverse else
+                       np.asarray(flux[row][:size], float),
                        -1 if reverse else 1, size+1 if reverse else 0)
         rows.add(row)
     return spectra, int(total)

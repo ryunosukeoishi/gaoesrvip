@@ -1,15 +1,15 @@
 """Fit figures in input flux units or a fixed posterior-median normalization."""
 import numpy as np
 import matplotlib.pyplot as plt
-from .models import pixel_mass, prediction, _unpack_shape, _model_peak
+from .models import pixel_mass, prediction, _unpack_shape
 
 BLUE, RESIDUAL_ORANGE = '#2a62d5', '#d55e00'
 
 
-def _components(v, shape, dv, *, tophat, model='free_centers'):
-    s1, f, s2, delta, mu1 = _unpack_shape(shape, model)
-    return ((1-f)*pixel_mass(v-mu1, [s1, 0, s1, 0], dv, tophat=tophat)/dv,
-            f*pixel_mass(v-mu1-delta, [s2, 0, s2, 0], dv, tophat=tophat)/dv)
+def _components(v, shape, dv):
+    s1, f, s2, delta, mu1 = _unpack_shape(shape)
+    return ((1-f)*pixel_mass(v-mu1, [s1, 0, s1, 0, 0.], dv)/dv,
+            f*pixel_mass(v-mu1-delta, [s2, 0, s2, 0, 0.], dv)/dv)
 
 
 def _median_residual(lines, grid):
@@ -30,7 +30,6 @@ def _plot_overlay(result):
         layout='constrained', gridspec_kw={'height_ratios': [3, 1, 1]*rows})
     velocity, grid = np.linspace(-10, 10, 2001), np.linspace(-9.5, 9.5, 381)
     residual_rows, median_rows = [[] for _ in range(rows)], [[] for _ in range(rows)]
-    tophat = result.settings['tophat']
     for panel, order in enumerate(result.orders):
         row, col = divmod(panel, cols)
         top, bottom, zoom = axes[3*row:3*row+3, col]
@@ -41,23 +40,21 @@ def _plot_overlay(result):
                 ax.sharey(axes[3*row+j, 0])
         d, shape = order.data, np.median(order.shape_samples, axis=0)
         dv = np.median(d.dv)
-        peak = 0. if order.model == 'lab_centered' else _model_peak(shape, dv, tophat=tophat)
+        peak = 0.
         for i in range(len(d.x0)):
             v, observed = order.normalized_line(i)
             top.plot(v-peak, observed, '.-', color='black', alpha=.25, lw=.7, markersize=2.5)
-        first, second = _components(velocity+peak, shape, dv, tophat=tophat, model=order.model)
+        first, second = _components(velocity+peak, shape, dv)
         model, = top.plot(velocity, first+second, color=BLUE, lw=2)
         top.plot(velocity, first, velocity, second, color=BLUE, ls=':', lw=1)
         top.axhline(0, color='.75', lw=.6)
         title = f'Order {d.order} ({len(d.x0)} lines)'
-        if order.model == 'lab_centered':
-            title += ': lab_centered'
         if order.baseline_degree == 2:
             title += ' (quadratic baseline)'
         top.set(title=title, xlim=(-10, 10), xticks=[-10, -5, 0, 5, 10])
         if panel == 0:
             top.legend([model, top.lines[0]], ['common 2G', 'data'], fontsize=10)
-        residuals = [(v-peak, r) for v, r in order.residual_lines(tophat=tophat)]
+        residuals = [(v-peak, r) for v, r in order.residual_lines()]
         for v, residual in residuals:
             bottom.plot(v, residual, '.-', color='black', alpha=.2, lw=.7, markersize=2)
             residual_rows[row].extend(residual[np.abs(v) <= 8])
@@ -73,8 +70,7 @@ def _plot_overlay(result):
         if col == 0:
             for ax, label in zip((top, bottom, zoom), ('Normalized density', 'Residual', 'Median residual')):
                 ax.set_ylabel(label+' [s/km]')
-        origin = 'table wavelength' if order.model == 'lab_centered' else 'model peak'
-        zoom.set_xlabel(f'Velocity from {origin} [km/s]')
+        zoom.set_xlabel('Velocity from reference wavelength [km/s]')
     for row in range(rows):
         for j, values, floor, percentile in [(1, residual_rows[row], .005, 98), (2, median_rows[row], .0005, 99)]:
             extent = max(floor, 1.15*np.nanpercentile(np.abs(values), percentile))
@@ -88,34 +84,40 @@ def _plot_overlay(result):
 
 def _plot_residual_summary(result, *, velocity_range):
     summary = result.residual_summary(velocity_range=velocity_range)
-    columns = ['lab_wave', 'rms_peak_percent', 'rms_sigma']
+    chebyshev = result.settings['mode'] == 'chebyshev'
+    peak_column = 'rms_observed_peak_percent' if chebyshev else 'rms_peak_percent'
+    columns = ['lab_wave', peak_column, 'rms_sigma']
     valid = np.isfinite(summary[columns].to_numpy()).all(axis=1)
     summary = summary.loc[valid]
     if summary.empty:
         raise ValueError('No lines with finite wavelengths and residual metrics to plot')
-    fig, axes = plt.subplots(2, 1, sharex=True, figsize=(6.4, 6.1), layout='constrained')
+    fig, axes = plt.subplots(2, 1, sharex=True, figsize=(8, 6.1), layout='constrained')
     colors = [BLUE, *plt.get_cmap('tab10').colors[1:]]
     for i, (order, rows) in enumerate(summary.groupby('order', sort=False)):
         for ax, column in zip(axes, columns[1:]):
             ax.plot(rows.lab_wave, rows[column], 'o', color=colors[i % len(colors)],
                     markersize=4.5, label=f'Order {order}')
-    axes[0].set_ylabel('Residual RMS / model peak [%]')
+    peak_label = 'observed' if chebyshev else 'model'
+    axes[0].set_ylabel(f'Residual RMS / {peak_label} peak [%]')
     axes[1].set_ylabel('RMS(residual / noise)')
     axes[1].axhline(1., color='.5', ls='--', lw=.8)
     axes[1].set_xlabel('Wavelength [Å]')
     for ax in axes:
-        ax.set_ylim(bottom=0)
-    axes[0].legend(fontsize=9)
+        if chebyshev:
+            ax.set_yscale('log')
+        else:
+            ax.set_ylim(bottom=0)
+    axes[0].legend(fontsize=9, loc='upper left', bbox_to_anchor=(1.02, 1.), borderaxespad=0.)
     window = ('All valid fitted pixels' if velocity_range is None else
               f'Table velocity: {velocity_range[0]:g} to {velocity_range[1]:g} km/s')
-    title = f"{result.settings['mode']} 2G ({result.settings['model']})"
+    title = f"{result.settings['mode']} 2G"
     if result.settings['baseline_degree'] == 2:
         title += ', quadratic baseline'
     fig.suptitle(f'{title}\n{window}')
     return fig
 
 
-def _posterior_lines(order, i, velocity, indices, *, tophat, reference=None, include_baseline=False):
+def _posterior_lines(order, i, velocity, indices, *, reference=None, include_baseline=False):
     d = order.data
     flux = np.median(order.local_samples[:, i, 2])
     center = order.reference_pixel(i)
@@ -124,7 +126,7 @@ def _posterior_lines(order, i, velocity, indices, *, tophat, reference=None, inc
     if not len(indices):
         return np.empty((0, len(velocity)))
     curves = np.array([prediction(x, d.dv[i], order.local_samples[k, i],
-        order.shape_for_line(i)[k], tophat=tophat, model=order.model,
+        order.shape_for_line(i)[k],
         reference=d.table_pixel[i], baseline_degree=order.baseline_degree) for k in indices])
     if include_baseline:
         return curves
@@ -134,7 +136,6 @@ def _posterior_lines(order, i, velocity, indices, *, tophat, reference=None, inc
 def _plot_lines(result, *, n_draws=30, seed=0, include_baseline=False):
     figures, rng = [], np.random.default_rng(seed)
     velocity = np.linspace(-10, 10, 2001)
-    tophat = result.settings['tophat']
     for order in result.orders:
         d = order.data
         indices = rng.choice(len(order.local_samples), min(n_draws, len(order.local_samples)), replace=False)
@@ -145,8 +146,6 @@ def _plot_lines(result, *, n_draws=30, seed=0, include_baseline=False):
             fig, axes = plt.subplots(rows, cols, squeeze=False, sharex=True,
                 figsize=(2.8*cols, 1.8*rows+.6), layout='constrained')
             title = f"Order {d.order}: {result.settings['mode']} 2G"
-            if order.model == 'lab_centered':
-                title += ' (lab_centered)'
             if order.baseline_degree == 2:
                 title += ' [quadratic baseline]'
             if include_baseline:
@@ -156,8 +155,7 @@ def _plot_lines(result, *, n_draws=30, seed=0, include_baseline=False):
                 center = order.reference_pixel(i)
                 shape = np.median(order.shape_for_line(i), axis=0)
                 reference = d.table_pixel[i]
-                first, second = _components(velocity+(reference-center)*d.dv[i], shape, d.dv[i],
-                                            tophat=tophat, model=order.model)
+                first, second = _components(velocity+(reference-center)*d.dv[i], shape, d.dv[i])
                 total = first+second
                 if include_baseline:
                     flux = np.median(order.local_samples[:, i, 2])
@@ -176,7 +174,7 @@ def _plot_lines(result, *, n_draws=30, seed=0, include_baseline=False):
                 ax.plot(velocity, first, velocity, second, color=BLUE, ls=':', lw=.7, zorder=3)
                 if include_baseline:
                     baseline_line, = ax.plot(velocity, baseline, color='.4', ls='--', lw=.9, zorder=3)
-                for curve in _posterior_lines(order, i, velocity, indices, tophat=tophat,
+                for curve in _posterior_lines(order, i, velocity, indices,
                                               reference=reference, include_baseline=include_baseline):
                     ax.plot(velocity, curve, color=BLUE, alpha=.15, lw=.6, zorder=2)
                 ax.set_title(f'{d.lab_wave[i]:.2f} Å', fontsize=9)
@@ -191,7 +189,7 @@ def _plot_lines(result, *, n_draws=30, seed=0, include_baseline=False):
                         ax.legend([model, data], ['2G', 'data'], fontsize=7)
             for ax in axes.flat[len(page):]:
                 ax.set_visible(False)
-            fig.supxlabel('Velocity from table wavelength [km/s]', fontsize=11)
+            fig.supxlabel('Velocity from reference wavelength [km/s]', fontsize=11)
             ylabel = 'Flux [input units]' if include_baseline else 'Normalized density [s/km]'
             fig.supylabel(ylabel, fontsize=11)
             figures.append(fig)

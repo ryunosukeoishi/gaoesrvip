@@ -13,7 +13,7 @@ pip install -e .
 ## Usage
 
 Provide a pipeline-extracted ThAr FITS file and its IRAF wavelength calibration file to
-`select_lines()`. See [examples/thar_linefit.ipynb](examples/thar_linefit.ipynb) for a real-data example.
+`select_lines()`. See [the common-IP notebook](examples/thar_ip_analysis_common_for_jaxstar.ipynb) for a real-data example.
 
 ```python
 from gaoesrvip import select_lines, fit
@@ -25,20 +25,20 @@ data = select_lines(
     order_offset=100, half_window=7,
 )
 
-individual = fit(data, mode="individual", tophat=True)
+individual = fit(data, mode="individual")
 individual.parameters
 individual.plot_lines()
 individual.resolving_power()
 
-common = fit(data, mode="common", tophat=True)
+common = fit(data, mode="common")
 common.parameters
 common.plot_lines()
 common.overlay()
 ```
 
 To fit a ThAr spectrum processed with `dispcor` and `scombine`, add
-`fit_spectrum`. Line selection, including the saturation threshold and optional
-screening fit, uses the central spectrum and its database:
+`fit_spectrum`. Line selection, including the saturation threshold, uses the central spectrum
+and its database:
 
 ```python
 data = select_lines(
@@ -47,8 +47,8 @@ data = select_lines(
     fit_spectrum="data/ThAr20251107_2_ecfw.fits",
     orders=[104, 105], gain=1.935, read_noise=4.0, saturation=5000,
 )
-individual = fit(data, mode="individual", model="lab_centered", tophat=False)
-common = fit(data, mode="common", model="lab_centered", tophat=False)
+individual = fit(data, mode="individual")
+common = fit(data, mode="common")
 ```
 
 The bundled `data/ThAr20251107_2_ecfw.fits` is the same lamp exposure as the
@@ -57,11 +57,26 @@ combined with the archived position-dependent wavelength solutions using
 `dispcor(log=no)` and `scombine(combine="sum", reject="none")`, without per-strip
 flat division.
 
-The summed input must be a 2D IRAF multispec FITS with unshifted linear wavelength
-coordinates and a positive integer `NCOMBINE`. Apertures are matched using
+The summed input can be a 2D IRAF multispec FITS or a ThAr `.pkl`/`.pickle`:
+
+```python
+# Accepted by select_lines() and analyze_thar_ip_2g():
+fit_spectrum = "data/ThAr20251107_1_ip.pkl"
+```
+
+A trusted local ThAr pickle must contain `data` (a DataFrame with `order`, `lam`,
+and `flux`) and `header` (its FITS header). `order` is the zero-based multispec
+row index; the header supplies the aperture mapping and each row's valid length.
+The reader uses `flux`, not `fflux`, and discards padded tails before checking
+`lam` against the linear WCS. It does not resample or apply flat/barycentric
+corrections. The central selection spectrum and ecidentify database are still
+required. The fitting model and noise calculation are the same as for FITS.
+
+Both formats require unshifted linear wavelength coordinates and a positive
+integer `NCOMBINE`. Apertures are matched using
 `order_offset`, not the FITS beam numbers. The selected central windows are mapped
 to the sum's velocity sampling, rounding outward to whole output pixels. No extra
-interpolation or screening fit is applied. Uncovered windows or windows with fewer
+interpolation is applied. Uncovered windows or windows with fewer
 than nine usable samples are skipped with a warning; finite zero and negative flux
 samples are retained. FITS padding outside each spectrum's WCS length is excluded.
 
@@ -79,34 +94,43 @@ redward analysis grid. Metadata records the mapping back to original input pixel
 For a sum this maps to its FITS sampling, not to the raw CCD.
 
 - `individual`: infer a separate two-Gaussian profile for each line.
-- `common`: share the profile within each order. With the default model, fit background, slope, flux, and center for each line.
+- `common`: share the profile within each order. Fit background, slope and flux separately for each line.
 - `chebyshev`: fit a smooth wavelength-dependent IP with a whole-line spectral mixture; retain independent least-squares comparison points.
-- `tophat=True`: integrate over a one-pixel top-hat. `False`: evaluate at pixel centers.
 
-`select_lines()` defaults to `screen_fit=False`: database, blend, saturation, finite-data,
-and usable-window checks remain, while preliminary fit-quality cuts are skipped.
-Set `screen_fit=True` to restore the central-spectrum 2G screening fit and its
-`max_center_shift=1.` pixel and `max_width_error=.1` FWHM-relative-uncertainty cuts.
-The screening fit uses optimization and covariance propagation, not NUTS.
+All modes use a 2G profile relative to the reference wavelength, evaluated at pixel centers.
+`select_lines()` applies database, blend, saturation, finite-data and usable-window
+checks, without a preliminary fitting step. `screen_fit` and its quality thresholds,
+`tophat`, and the `model` selector have been removed from the API. Omit these
+arguments in existing code. The profile definition is fixed; no model or
+pixel-integration flags are stored in new results.
 Physical orders are `aperture + order_offset`.
 Set the gain, read noise, and `order_offset` for your input data.
 Individual/common `fit()` defaults to `warmup=500, samples=500, chains=1` and prints the MCMC summary after sampling.
 
 ## Chebyshev spectral mixture
 
-See [thar_ip_chebyshev_mixture_order104.ipynb](examples/thar_ip_chebyshev_mixture_order104.ipynb)
-for an executed ecfw example. Choose the degree yourself; the notebook defaults to
-degree 4, `screen_fit=False`, `blend_guard=4`, and `nuts=False`.
+See [thar_ip_analysis_chebyshev_for_jaxstar.ipynb](examples/thar_ip_analysis_chebyshev_for_jaxstar.ipynb)
+for a summed-spectrum example with selectable orders and FITS or pickle input.
+Set `orders` in the settings cell;
+diagnostics, per-order line figures and saved results follow that list.
+The notebook searches degrees 0 through `max_degree` for each selected order, adopts the
+smallest BIC_MAP, and optionally samples from those MAPs without refitting.
+Line fits, overlays and cumulants are displayed separately for each order.
+Full-window residual RMS is shown against wavelength (legend outside) and
+observed peak (all orders together). These are the main diagnostics; the all-order
+cumulant overlay is the final reference figure.
+Comparison tables are saved rather than displayed. No prediction grid is saved.
 
 ```python
 chebyshev = fit(data, mode="chebyshev", degree=4, nuts=False)
-# Chebyshev defaults: model="lab_centered", tophat=False, baseline_degree=1.
+# Default baseline_degree=1.
 # Each line is first optimized independently (three starts, no NUTS).
 # The joint fit uses spectra directly; individual points are comparison data.
 
 chebyshev.plot_lines(include_baseline=True)  # data, components, residuals, P(out)
 chebyshev.overlay(min_inlier_probability=0.5)  # strict P(in) > 0.5, display only
 chebyshev.plot_cumulants(ci=0.68, zoom_outliers=True)
+chebyshev.plot_cumulants(overlay_orders=True)  # all orders on the same κ1–κ5 axes
 chebyshev.line_membership
 chebyshev.individual_parameters
 chebyshev.residual_summary()
@@ -116,6 +140,49 @@ chebyshev.save("results/chebyshev", figures=True)
 restored = load_result("results/chebyshev")  # from gaoesrvip import load_result
 restored.plot_cumulants()  # no refitting or sampling
 ```
+
+To choose degrees per order, supply `degrees` instead of a fixed `degree`:
+
+```python
+chebyshev_map = fit(data, mode="chebyshev", degrees=range(0, 6), nuts=False)
+chebyshev_map.degree_scores  # logL, k, n_pixels, BIC_MAP, delta, selection and failure status
+
+# Optional: run only NUTS from the stored MAPs, including after load_result().
+chebyshev = chebyshev_map.sample_nuts(warmup=500, samples=500, chains=1)
+```
+
+`degrees` takes precedence over `degree` in Chebyshev mode. The search uses the
+same windows for every candidate and evaluates `BIC_MAP = -2*logL(MAP) + k*log(n)`.
+Here `n` is the valid pixel count and `k` counts the `5*(degree+1)` coefficients,
+all line-local parameters and three mixture parameters. This is a BIC-like
+heuristic at a regularized MAP, not maximum-likelihood BIC. Ties select the smaller
+degree. Failed or unsupported candidates are recorded and excluded; an order
+with no converged candidate raises an error. Individual comparison fits do not
+contribute parameters to this likelihood. `fit(..., degrees=..., nuts=True)` also
+works: NUTS runs only on the selected MAPs. The chosen degree stays fixed during
+sampling, so posterior bands are conditional on that choice.
+
+The selected result is the usual `FitResult`, even when degrees differ by order.
+`settings["degree_by_order"]` records them; `degree_scores.csv` and `result.json`
+preserve the complete comparison. Sampling returns a new result, leaving the
+MAP result and its degree comparison intact.
+
+For transfer to another code, `save()` writes **`ip_model.json`** for any Chebyshev
+result. `result.ip_model` returns the same JSON-compatible dictionary. It includes:
+
+- Each order's degree, coefficient matrix, wavelength domain, center and scale.
+- Chebyshev first-kind recurrence and normalization `x=(wavelength-center)/scale`.
+- The expansion `q[j] = sum_k coefficients[k][j] * T_k(x)`, including the full constant term.
+- Coordinate order, transforms to physical 2G parameters, units and velocity origin.
+
+These coefficients reproduce the displayed curve (MAP or posterior-median
+coefficients). They do not require a saved wavelength grid or the fitting package
+to evaluate. Full posterior draws remain in `fit_order_<order>.npz`; the compact
+JSON contains the representative curve only. Keep the wavelength convention of
+the reference database when using the coefficients externally.
+
+[thar_ip_model_from_json.ipynb](examples/thar_ip_model_from_json.ipynb) reads this
+JSON directly and plots one order's 2G parameters and cumulants without fitting.
 
 Set `nuts=True, warmup=500, samples=500, chains=2` in the same `fit` call to
 sample the joint model initialized at its MAP. Individual comparison points remain
@@ -128,7 +195,7 @@ The saved format stores the MAP, actual posterior draws when present, independen
 fit points/status, membership, priors, observations, and diagnostics together.
 
 All five coordinates `(mu1, log(delta), log(sigma1), log(sigma2), logit(fraction2))`
-are degree-`d` Chebyshev polynomials on each order's laboratory-wavelength range,
+are degree-`d` Chebyshev polynomials on each order's reference-wavelength range,
 mapped to [-1, 1]. Each line's IP equals the polynomial prediction exactly.
 Background, slope and total flux (and quadratic background when requested) are
 local parameters. A failed individual optimization is reported, not a selection cut.
@@ -156,9 +223,14 @@ than the unregularized maximum-likelihood fits in the experimental degree-search
 individual points colored by spectral `P(inlier)`. Display zoom uses the curve
 and non-extreme inlier points; triangles identify clipped points. Set
 `zoom_outliers=False` to show the full range. Independent points have no error bars.
+With `overlay_orders=True`, curves, credible bands and points share the order's
+color. Small dots indicate `P(inlier) > 0.5`; faint crosses indicate the remaining
+points. This binary distinction affects display only. Clipped points use filled
+triangles for inliers and faint open triangles otherwise.
 `residual_summary()` additionally exposes `observed_peak`, `rms_observed_peak_percent`
 and membership; the existing `rms_peak_percent` column retains its fitted-model-peak
-normalization. Both RMS metrics are unweighted diagnostics.
+normalization. The Chebyshev RMS plot uses the fixed observed peak to keep
+outliers with negligible fitted flux readable. Both RMS metrics are unweighted diagnostics.
 
 ```python
 import numpy as np
@@ -168,14 +240,46 @@ shapes = chebyshev.predict_ip(wave, order=104)  # (draw, wavelength, 5); MAP: on
 kappa = cumulants(shapes)                     # (draw, wavelength, 5), units (km/s)**k
 ```
 
-`analyze_thar_ip_2g(..., mode="chebyshev", degree=4, nuts=False)` also runs the
-complete selection/fit/save workflow. Its figures include all lines, all-line and
-inlier overlays, cumulants, and residual summaries. It does not require `corner`.
+`analyze_thar_ip_2g(..., mode="chebyshev", max_degree=4, nuts=False)` runs the
+complete selection, degree search, fit and save workflow. It tries every degree
+from 0 through 4, independently selects the smallest BIC_MAP for each order,
+and reuses those MAPs. Set `nuts=True` to sample only the selected models.
+Alternatively, `degree=2` fixes the degree; specifying both `degree` and
+`max_degree` is an error. If neither is supplied, Chebyshev mode uses degree 2.
+Arbitrary candidate sets remain available through the low-level `fit(degrees=...)`.
+
+```python
+chebyshev = analyze_thar_ip_2g(
+    thar="data/ThAr20251107_2.center.fits",
+    wavelength_file="data/ecThAr20251107_2.center",
+    fit_spectrum="data/ThAr20251107_2_ecfw.fits",
+    output_dir="results/thar_ip_analysis_chebyshev_for_jaxstar",
+    orders=[104, 105], gain=1.0, read_noise=4.0, saturation=51000,
+    mode="chebyshev", max_degree=4, nuts=False,
+)
+```
+
+The paired notebooks are
+[common IP](examples/thar_ip_analysis_common_for_jaxstar.ipynb) and
+[Chebyshev mixture](examples/thar_ip_analysis_chebyshev_for_jaxstar.ipynb).
+The Chebyshev notebook ends with the one-call alternative, using the same input
+and plotting settings as its step-by-step workflow.
+
+Chebyshev exports include `degree_scores.csv`, `ip_model.json` (coefficients and
+basis definition), individual fits, memberships, MAPs and optional posterior
+draws. Its figures are `lines_order_<order>.png`,
+`overlay_inliers_order_<order>.png`, `cumulants_order_<order>.png`,
+`residual_summary.png`, `rms_vs_peak.png` (all orders on one axis), and the final
+`cumulants_all_orders.png`. Orders with no lines passing the overlay cut have
+no overlay figure. Use `min_inlier_probability`, `ci`, `plot_n_positions` and
+`zoom_outliers` to configure these plots; the same options are accepted by
+`save_analysis_figures`. `result.plot_rms_vs_peak()` provides the combined RMS
+plot interactively. Chebyshev analysis does not require `corner`.
 
 ## Run and save the complete analysis
 
-`analyze_thar_ip_2g()` runs the workflow in
-[thar_ip_analysis_for_jaxstar.ipynb](examples/thar_ip_analysis_for_jaxstar.ipynb)
+With its default `mode="common"`, `analyze_thar_ip_2g()` runs the workflow in
+[thar_ip_analysis_common_for_jaxstar.ipynb](examples/thar_ip_analysis_common_for_jaxstar.ipynb)
 and saves the numerical results and **all** its diagnostic figures. Install the
 corner-plot dependency first (also included in the `notebook` extra):
 
@@ -196,18 +300,17 @@ common = analyze_thar_ip_2g(
 common.parameters
 ```
 
-This convenience function defaults to `mode="common"`. Its profile defaults match the
-notebook: `model="lab_centered"`, `tophat=False`, `baseline_degree=1`, and
-`saturation=5000`. The lower-level `fit()` and `select_lines()` have different
-defaults for model, pixel integration, and saturation. The optional `fit_spectrum` argument is also accepted. Selection options such as
-`half_window` and `max_width_error`, and fit options such as `baseline_degree`,
+This convenience function defaults to `mode="common"`, `baseline_degree=1`, and
+`saturation=5000`; lower-level `select_lines()` defaults to `saturation=51000`.
+The optional `fit_spectrum` argument is also accepted. Selection options such as
+`half_window` and `blend_guard`, and fit options such as `baseline_degree`,
 `warmup`, `samples`, `chains`, and `seed`, can be supplied directly as keywords.
 
 Choose an empty or new output directory; existing results are never overwritten.
 Input files, the output directory, and the corner dependency are checked before
 selection or MCMC. The returned object is the usual `FitResult`.
 
-The output contains `result.json`, `parameters.csv`, `line_parameters.csv`,
+For common mode, the output contains `result.json`, `parameters.csv`, `line_parameters.csv`,
 `residual_summary.csv`, and `posterior_order_<order>.npz`, using the existing
 `load_result()` format. The `figures/` subdirectory contains 180 dpi PNGs:
 
@@ -231,23 +334,18 @@ save_analysis_figures(common, "results/ThAr20251107_2/figures_300dpi", dpi=300)
 Its output path is the figure directory itself. It closes the figures it creates
 and preserves figures already open in a notebook.
 
-## Model choice
+## Reference-wavelength 2G profile
 
-For individual/common modes, `fit(..., model="free_centers")` is the default and preserves the original model and
-priors. Gaussian 1 has a free pixel center for each line, `delta_kms` can have either
-sign, and `fraction2` lies between 0.001 and 0.49. In common mode the four shape
-parameters are shared, while line centers remain independent.
-
-Use `model="lab_centered"` to keep the existing wavelength solution fixed and measure
-both Gaussian centers relative to each line's tabulated wavelength:
+The wavelength solution is fixed. Both Gaussian centers are measured relative to
+each line's tabulated wavelength, and the profile is evaluated at pixel centers:
 
 ```python
-common_lab = fit(data, mode="common", model="lab_centered", tophat=True)
+common_lab = fit(data, mode="common")
 common_lab.parameters
 common_lab.plot_lines()
 common_lab.overlay(wavelength_range=(5000, 5100))
 
-individual_lab = fit(data, mode="individual", model="lab_centered", tophat=True)
+individual_lab = fit(data, mode="individual")
 ```
 
 The profile is `(1-f) N(v; mu1, sigma1) + f N(v; mu1+delta, sigma2)`.
@@ -258,7 +356,7 @@ either component to have the larger area. Common fits share all five parameters
 within each order, including `mu1`; individual fits infer all five for each line.
 Background, slope, and total flux are always fitted separately for each line.
 There is no additional free line center in this model. The background is defined
-at the table wavelength and the slope remains in flux per pixel.
+at the reference wavelength and the slope remains in flux per pixel.
 
 The fixed coordinate is `v = (pixel - table_pixel) * dv`, using the existing local
 velocity scale in km/s per pixel. `table_pixel` comes from inverting the supplied
@@ -266,7 +364,8 @@ wavelength solution at the tabulated wavelength. The analysis grid increases wit
 wavelength, so positive velocity denotes a redshift. `dv` remains the positive
 sampling width in km/s. No wavelength-solution coefficients are fitted.
 
-The model uses independent uniform priors, with `d = median(dv)` within the order:
+Individual/common fits use independent uniform priors, with `d = median(dv)`
+within the order (Chebyshev coefficient priors are described above):
 
 | Parameter | Range |
 | --- | --- |
@@ -275,53 +374,40 @@ The model uses independent uniform priors, with `d = median(dv)` within the orde
 | `delta_kms` | 0 to `4*d` |
 | `mu1_kms` | `-4*d` to `4*d` |
 
-Individual `lab_centered` profiles can represent the same two-Gaussian shapes as
-the original parameterization, but the changed prior ranges mean their posteriors
-need not be identical. Common `lab_centered` fits additionally constrain the line
-locations: offsets that differ between lines cannot be absorbed by independent centers.
-
 ### Baseline degree
 
-Both models and fit modes accept `baseline_degree=1` (the default) or `2`:
+All fit modes accept `baseline_degree=1` (the default) or `2`:
 
 ```python
-common_quadratic = fit(data, mode="common", model="lab_centered",
-                       tophat=False, baseline_degree=2)
+common_quadratic = fit(data, mode="common", baseline_degree=2)
 common_quadratic.plot_lines(include_baseline=True)
 common_quadratic.overlay()
 ```
 
 The baseline is `bkg + slope*u` for degree 1 and
 `bkg + slope*u + quadratic*u**2` for degree 2. Here `u` is the pixel offset from
-the table wavelength for `lab_centered`, or from the fitted Gaussian-1 center for
-`free_centers`. Each line has its own coefficients, including in common mode.
+the reference wavelength. Each line has its own coefficients, including in common mode.
 `quadratic` is in input flux units per pixel squared and is appended to
 `line_parameters` and `order.local_names`.
 
 Its prior is uniform between `-span/L**2` and `span/L**2`, where
 `span = max(max(y)-min(y), 1)` over valid pixels in that line and `L` is the largest
-valid pixel distance from `table_pixel` (`lab_centered`) or `x0` (`free_centers`),
+valid pixel distance from `table_pixel`,
 with a minimum of one pixel. The other priors retain their existing bounds.
-The pixel top-hat applies to the Gaussian profile; the baseline is evaluated at
-pixel centers for both settings.
+The profile and baseline are both evaluated at pixel centers.
 
 The selected degree is used throughout fitting, baseline subtraction, plots,
 residual diagnostics, and save/load. Reuse the same `data` to compare degrees on
-identical lines and windows. This option does not change `select_lines()` or its
-initial line screening, which continues to use a linear baseline.
+identical lines and windows. This option does not change `select_lines()`.
 
 ## Results
 
 `parameters` contains p16, median, and p84 for the profile parameters and derived quantities.
-`line_parameters` contains the background, slope, and flux for each line, plus
-`center` for `free_centers` results and `quadratic` when `baseline_degree=2`.
-`R = c/FWHM` uses the two-Gaussian width excluding the pixel top-hat.
-In `free_centers`, the profile is `(1-f) N(v; 0, sigma1) + f N(v; delta, sigma2)`.
-The fitted `center` is Gaussian 1's position on the analysis grid, and
-`centroid_kms = f*delta` is relative to that center.
-In `lab_centered`, `parameters` also includes `mu1_kms` and the derived
+`line_parameters` contains the background, slope and flux for each line, plus
+`quadratic` when `baseline_degree=2`. `R = c/FWHM` uses the intrinsic two-Gaussian
+width. `parameters` includes `mu1_kms` and the derived
 `mu2_kms = mu1_kms + delta_kms`; `centroid_kms = mu1_kms + f*delta_kms` is relative
-to the table wavelength. Derived quantities are computed for each posterior draw
+to the reference wavelength. Derived quantities are computed for each posterior draw
 before taking quantiles.
 Representative curves use the median of each posterior parameter.
 
@@ -337,9 +423,7 @@ Representative curves use the median of each posterior parameter.
 - `individual.resolving_power()`: R versus wavelength with p16–p84 error bars.
   Each order has its own color and a matching horizontal median line with its value in the legend.
 - `common.overlay()`: three panels showing data and model, residuals, and median residuals.
-  For `free_centers`, zero velocity corresponds to the peak of the displayed model;
-  data are aligned using the separately fitted line centers.
-  For `lab_centered`, zero is the table wavelength, exactly as in `plot_lines()`.
+  Zero velocity is the reference wavelength, exactly as in `plot_lines()`.
   Data and model retain their fitted offsets; no peak alignment is applied.
   Use `common.overlay(wavelength_range=(5000, 5100))` to display only lines whose
   tabulated wavelengths (`lab_wave`, in Å) fall within the inclusive range.
@@ -349,7 +433,7 @@ Representative curves use the median of each posterior parameter.
 
 ### Per-line residual diagnostics
 
-Both models and both fit modes provide a table and a wavelength comparison plot:
+All fit modes provide a table and a wavelength comparison plot:
 
 ```python
 common_lab.residual_summary()
@@ -361,8 +445,7 @@ Each row identifies the order, line ID, and `lab_wave`, and reports:
 
 - `rms_peak_percent`: `100 * sqrt(mean(residual**2)) / model_peak`. A value of 1 means
   1% of the fitted line peak above the continuum. The peak is the maximum of the smooth
-  observation-space model, using that line's pixel width and the fitted `tophat`
-  setting; it is independent of where the sampled pixels fall relative to the peak.
+  pixel-center model, using that line's pixel width; it is independent of where the sampled pixels fall relative to the peak.
 - `rms_sigma`: `sqrt(mean((residual / noise)**2))`. This uses the noise supplied to
   the fit, with no degrees-of-freedom correction. The plot marks 1 as a noise-scale
   reference, not an automatic acceptance threshold.
@@ -371,19 +454,17 @@ Each row identifies the order, line ID, and `lab_wave`, and reports:
 
 Residuals use the median of each fitted parameter, as in the line plots. The
 default uses all valid fitted pixels. `velocity_range=(min, max)` selects pixel
-centers within inclusive bounds in km/s relative to the **table wavelength** for
-either model; it does not recenter individual lines. Use the same range when
+centers within inclusive bounds in km/s relative to the **reference wavelength** for
+all modes; it does not recenter individual lines. Use the same range when
 comparing lines to avoid diluting the RMS with different amounts of continuum.
 Masked or nonfinite pixels and nonpositive/nonfinite noise are excluded. Lines
 with no selected pixels remain in the table with `n_pixels=0` and NaN metrics.
-For older data without `table_pixel`, the full-cutout metrics remain available,
-but velocity bounds require that reference and the reported velocity extent is NaN.
 
 `save()` also writes `residual_summary.csv` for all valid fitted pixels.
 For a restricted range, save the returned table with its `to_csv()` method.
 
 Posterior arrays are available per order. `order.shape_names` and `order.local_names`
-give their last-axis labels for the selected model:
+give their last-axis labels:
 
 ```python
 order = common_lab.orders[0]
@@ -394,19 +475,20 @@ order.local_samples  # (draw, line, 3); baseline_degree=2 adds a fourth coeffici
 # corner.corner(order.shape_samples, labels=order.shape_names)
 ```
 
-`result.save(directory)` stores the model choice, settings, posterior arrays,
-parameter tables, and figures. `load_result(directory)` restores either model;
-original schema-1 results without a model identifier load as `free_centers`.
-Results without a baseline degree load with the original linear baseline.
-The parameter label `fraction2` replaces the former `fraction` label in both models;
-existing posterior arrays remain readable and use the new label when loaded.
+`result.save(directory)` stores settings, posterior arrays, parameter tables and
+figures in schema 5, which fixes the reference-wavelength, pixel-center profile
+definition without model-selection flags. Compatible older results remain
+readable; obsolete flags are removed on load. Results using independent line
+centers or pixel integration are rejected rather than reinterpreted; use the
+earlier code to inspect those files.
+Results without a baseline degree use the original linear baseline.
 
 ### Input and selection metadata
 
 `select_lines()` records the absolute paths of the spectrum and wavelength-solution
 files, plus all selection arguments (including defaults): `orders`, `gain`,
 `read_noise`, `order_offset`, `half_window`, `saturation`, `blend_guard`,
-`resolving_power`, `max_center_shift`, and `max_width_error`.
+and `resolving_power`.
 
 ```python
 data[0].metadata

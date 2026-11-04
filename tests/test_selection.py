@@ -33,25 +33,6 @@ def test_ecidentify_last_solution_and_catalog(tmp_path):
         read_ecidentify(p)
 
 
-def test_screen_fit_uses_one_2g_fit_and_recovers_profile(monkeypatch):
-    from gaoesrvip import selection
-    x = np.arange(-7., 8.)
-    shape = [1.1, .25, 1.5, 1.1]
-    center = .2
-    y = selection._model(x, 20., .3, 3000., center, *shape)
-    calls = []
-    curve_fit = selection.curve_fit
-    def counted_fit(model, *args, **kwargs):
-        calls.append(model.__name__)
-        return curve_fit(model, *args, **kwargs)
-    monkeypatch.setattr(selection, 'curve_fit', counted_fit)
-    width, peak, error = selection._screen_fit(x, y, 0., seed=42)
-    expected_width, expected_peak = selection._width(shape)
-    assert calls == ['gaussian', '_model']
-    assert width == pytest.approx(expected_width, abs=.01)
-    assert peak == pytest.approx(center+expected_peak, abs=.01)
-    assert np.isfinite(error) and error < .1
-
 def test_selection_reasons_and_cutout_extraction(tmp_path, monkeypatch):
     # Unused catalog neighbors still matter for blend screening.
     features = [[4, 105, x, wave, wave, 1, 1, used] for x, wave, used in
@@ -63,23 +44,25 @@ def test_selection_reasons_and_cutout_extraction(tmp_path, monkeypatch):
     image[3, 24], image[3, 74], image[3, 99] = 10, 1000, 30
     thar = tmp_path/'thar.fits'
     fits.writeto(thar, image)
-    def screen(x, y, x0, seed):
-        return 4., 2. if y.max() == 30 else 0., .03
-    monkeypatch.setattr('gaoesrvip.selection._screen_fit', screen)
-    data = select_lines(thar, p, orders=[104], gain=2, read_noise=4, saturation=500, screen_fit=True)
+    data = select_lines(thar, p, orders=[104], gain=2, read_noise=4, saturation=500)
     d = data[0]
-    assert d.order == 104 and list(d.line_ids) == ['0']
+    assert d.order == 104 and list(d.line_ids) == ['0', '1']
     assert d.table_pixel[0] == pytest.approx(60.5)
     np.testing.assert_array_equal(d.y[0], image[3, 17:32])
     np.testing.assert_allclose(d.noise[0]**2, d.y[0]/2+4)
     default_data = select_lines(thar, p, orders=[104], gain=2, read_noise=4,
                                 half_window=5, saturation=500)
     assert isinstance(default_data, list)
-    assert len(default_data[0].x0) == 2  # Default skips only the fit-quality cut.
-    assert default_data[0].metadata['selection']['screen_fit'] is False
+    assert len(default_data[0].x0) == 2  # Both isolated, unsaturated windows survive without a fit-quality cut.
     np.testing.assert_array_equal(default_data[0].x[0], np.arange(20, 31))
     from gaoesrvip import fit
-    def sample(d, mode, tophat, bounds, local, shape, **kwargs):
+    from gaoesrvip.fitting import _bounds
+    # This fixture tests selection plumbing; its DB and artificial peaks are unrelated.
+    def initialize(d, mode, max_nfev, baseline_degree):
+        lo, hi, slo, shi, local, shape = _bounds(d, baseline_degree)
+        return local, shape, (lo, hi, slo, shi)
+    monkeypatch.setattr('gaoesrvip.fitting._optimize', initialize)
+    def sample(d, mode, bounds, local, shape, **kwargs):
         return np.repeat(local[None], 4, axis=0), np.repeat(shape[None], 4, axis=0)
     monkeypatch.setattr('gaoesrvip.fitting._sample', sample)
     result = fit(default_data, mode='individual', progress=False)
@@ -95,36 +78,27 @@ def test_selection_reasons_and_cutout_extraction(tmp_path, monkeypatch):
         select_lines(thar, p, orders=[104], gain=2, read_noise=4)
 
 
-def test_default_does_not_call_screen_fit(tmp_path, monkeypatch):
-    p = tmp_path/'ec'
-    p.write_text(database([[4, 105, 60.5, 5000, 5000, 1, 1, 1]], constant=525000))
-    image = np.full((4, 120), 5.)
-    image[3, 60] = 100.
-    path = tmp_path/'center.fits'
-    fits.writeto(path, image)
-    def forbidden(*args):
-        raise AssertionError('screen fit must be opt-in')
-    monkeypatch.setattr('gaoesrvip.selection._screen_fit', forbidden)
-    d = select_lines(path, p, orders=[104], gain=2., read_noise=4.,
-                     max_center_shift=0., max_width_error=0.)
-    assert len(d[0].x0) == 1
-
-
-@pytest.mark.parametrize('tophat', [True, False])
-def test_posterior_curves_keep_joint_draws_and_fixed_data_frame(tophat):
+def test_posterior_curves_keep_joint_draws_and_fixed_data_frame():
     d = synthetic()
-    local = np.tile([[12., .1, 1400., -.25], [20., -.15, 1000., .2],
-                     [8., .05, 1800., .05]], (3, 1, 1))
-    shape = np.array([np.tile([1.5, .3, 1.2, 2.], (3, 1)) for _ in range(3)])
+    local = np.tile([[12., .1, 1400.], [20., -.15, 1000.],
+                     [8., .05, 1800.]], (3, 1, 1))
+    shape = np.array([np.tile([1.5, .3, 1.2, 2., 0.], (3, 1)) for _ in range(3)])
     local[:, 0, 0] = [8, 12, 20]
     local[:, 0, 2] = [1000, 1400, 2000]
-    local[:, 0, 3] = [-.8, -.25, .5]
+    shape[:, 0, 4] = [-.8, -.25, .5]
     shape[:, 0, 3] = [1, 2, 3]
     order = OrderFit(d, local, shape)
     v = np.linspace(-8, 8, 41)
-    curves = _posterior_lines(order, 0, v, [2, 0], tophat=tophat)
-    b, slope, flux, center = np.median(local[:, 0], axis=0)
+    curves = _posterior_lines(order, 0, v, [2, 0])
+    b, slope, flux = np.median(local[:, 0], axis=0)
+    center = d.table_pixel[0]
     for curve, index in zip(curves, [2, 0]):
-        expected = (prediction(center+v/d.dv[0], d.dv[0], local[index, 0], shape[index, 0],
-                               tophat=tophat)-b-slope*v/d.dv[0])/flux/d.dv[0]
+        expected = (prediction(center+v/d.dv[0], d.dv[0], local[index, 0], shape[index, 0], reference=center)-b-slope*v/d.dv[0])/flux/d.dv[0]
         np.testing.assert_allclose(curve, expected)
+
+
+@pytest.mark.parametrize('kwargs', [dict(screen_fit=True), dict(screen_fit=False),
+                                    dict(max_center_shift=1.), dict(max_width_error=.1)])
+def test_removed_screen_options_raise(kwargs):
+    with pytest.raises(TypeError, match='unexpected keyword argument'):
+        select_lines('unused.fits', 'unused.db', orders=[104], gain=2., read_noise=4., **kwargs)

@@ -6,13 +6,11 @@ from gaoesrvip.results import FitResult, OrderFit
 from test_workflow import synthetic
 
 
-@pytest.mark.parametrize('model', ['free_centers', 'lab_centered'])
 @pytest.mark.parametrize('mode', ['common', 'individual'])
-@pytest.mark.parametrize('tophat', [True, False])
 @pytest.mark.parametrize('baseline_degree', [1, 2])
-def test_baseline_plot_matches_full_prediction(model, mode, tophat, baseline_degree):
+def test_baseline_plot_matches_full_prediction(mode, baseline_degree):
     import matplotlib.pyplot as plt
-    d = synthetic(tophat=tophat, origin=3700.).select([0])
+    d = synthetic(origin=3700.).select([0])
     d.table_pixel[0] += .3
     d.mask[0, -1] = False
     d.y[0, -1] = np.nan
@@ -20,14 +18,13 @@ def test_baseline_plot_matches_full_prediction(model, mode, tophat, baseline_deg
                       [[40., .2, 2400., 3701.2]]])
     shape = np.array([[[1.2, .25, 1.8, 1.]], [[2., .45, .8, 2.5]],
                       [[2.8, .4, 1.4, 3.]]])
-    if model == 'lab_centered':
-        local = local[:, :, :3]
-        shape = np.concatenate((shape, np.array([-.8, .1, .7])[:, None, None]), axis=-1)
+    local = local[:, :, :3]
+    shape = np.concatenate((shape, np.array([-.8, .1, .7])[:, None, None]), axis=-1)
     if baseline_degree == 2:
         local = np.concatenate((local, np.array([.08, -.12, .2])[:, None, None]), axis=-1)
     samples = shape[:, 0] if mode == 'common' else shape
-    result = FitResult([OrderFit(d, local, samples, model=model, baseline_degree=baseline_degree)],
-                       dict(mode=mode, model=model, tophat=tophat, baseline_degree=baseline_degree))
+    result = FitResult([OrderFit(d, local, samples, baseline_degree=baseline_degree)],
+                       dict(mode=mode, baseline_degree=baseline_degree))
     local_before, shape_before, data_before = local.copy(), samples.copy(), d.y.copy()
     fig = result.plot_lines(include_baseline=True)[0]
     ax = fig.axes[0]
@@ -36,12 +33,11 @@ def test_baseline_plot_matches_full_prediction(model, mode, tophat, baseline_deg
     v = total.get_xdata()
     x = reference+v/dv
     params, profile = np.median(local[:, 0], axis=0), np.median(shape[:, 0], axis=0)
-    origin = reference if model == 'lab_centered' else params[3]
+    origin = reference
     expected_baseline = params[0]+params[1]*(x-origin)
     if baseline_degree == 2:
         expected_baseline += params[-1]*(x-origin)**2
-    expected = prediction(x, dv, params, profile, model=model, reference=reference,
-                          tophat=tophat, baseline_degree=baseline_degree)
+    expected = prediction(x, dv, params, profile, reference=reference, baseline_degree=baseline_degree)
     np.testing.assert_array_equal(observed.get_ydata(), d.y[0, d.mask[0]])
     np.testing.assert_allclose(observed.get_xdata(), (d.x[0, d.mask[0]]-reference)*dv)
     np.testing.assert_allclose(total.get_ydata(), expected)
@@ -52,8 +48,7 @@ def test_baseline_plot_matches_full_prediction(model, mode, tophat, baseline_deg
     posterior = ax.lines[5:]
     assert len(posterior) == 3
     for draw_local, draw_shape in zip(local[:, 0], shape[:, 0]):
-        expected = prediction(x, dv, draw_local, draw_shape, tophat=tophat,
-                              model=model, reference=reference, baseline_degree=baseline_degree)
+        expected = prediction(x, dv, draw_local, draw_shape, reference=reference, baseline_degree=baseline_degree)
         assert sum(np.allclose(curve.get_ydata(), expected) for curve in posterior) == 1
     normalized = result.plot_lines(n_draws=0)[0]
     np.testing.assert_allclose(normalized.axes[0].lines[1].get_ydata(),

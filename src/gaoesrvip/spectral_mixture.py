@@ -4,12 +4,14 @@ No independently estimated IP coordinates or covariance matrices enter this
 fit. Both mixture components use the curve IP; the broad component downweights
 lines that the curve cannot describe within the narrow residual tolerance.
 """
+from copy import deepcopy
+from dataclasses import replace
 from time import perf_counter
 import numpy as np
 from scipy.optimize import minimize, least_squares, lsq_linear
-from scipy.special import erf, logsumexp
+from scipy.special import logsumexp
 
-from .chebyshev import (ChebyshevIP, _prepare, _basis, _coordinates_to_shape,
+from .chebyshev import (ChebyshevIP, _degree, _prepare, _basis, _coordinates_to_shape,
                         _shape_to_coordinates, ChebyshevFit)
 from .fitting import _bounds
 from .data import OrderData
@@ -21,7 +23,7 @@ def _peak_from_data(data, i):
     return float(np.max(y)-np.median(np.r_[y[:k], y[-k:]]))
 
 
-def _mass_and_gradient(velocity, dv, q, *, tophat):
+def _mass_and_gradient(velocity, dv, q):
     """Pixel mass and derivatives in (mu1, log delta, log s1, log s2, logit f)."""
     shape = _coordinates_to_shape(q)
     s1, fraction, s2, delta, mu = (shape[:, j, None] for j in range(5))
@@ -29,11 +31,6 @@ def _mass_and_gradient(velocity, dv, q, *, tophat):
 
     def component(center, sigma):
         v = velocity-center
-        if tophat:
-            a, b = (v-dv/2)/sigma, (v+dv/2)/sigma
-            pa, pb = np.exp(-.5*a*a)/normalizer, np.exp(-.5*b*b)/normalizer
-            mass = .5*(erf(b/np.sqrt(2))-erf(a/np.sqrt(2)))
-            return mass, (pa-pb)/sigma, a*pa-b*pb
         z = v/sigma
         mass = dv*np.exp(-.5*z*z)/(normalizer*sigma)
         return mass, mass*z/sigma, mass*(z*z-1)
@@ -63,11 +60,11 @@ def _line_mixture(residual, noise, mask, inlier_scale, extra_scale, epsilon):
 
 
 class _SpectralObjective:
-    def __init__(self, data, context, *, tophat, baseline_degree,
+    def __init__(self, data, context, *, baseline_degree,
                  inlier_scale_prior, outlier_extra_prior, log_scale_sd, outlier_beta,
                  prior_weight=1.):
         self.data, self.context = data, context
-        self.tophat, self.baseline_degree = tophat, baseline_degree
+        self.baseline_degree = baseline_degree
         self.inlier_base, self.extra_base = inlier_scale_prior, outlier_extra_prior
         self.log_scale_sd, self.beta = np.asarray(log_scale_sd), np.asarray(outlier_beta)
         if not np.isfinite(prior_weight) or prior_weight < 0:
@@ -82,7 +79,7 @@ class _SpectralObjective:
             raise ValueError('Every line requires a positive finite observed peak')
         self.y = np.where(data.mask, data.y/self.peak[:, None], 0.)
         self.noise = np.where(data.mask, data.noise/self.peak[:, None], 1.)
-        lo, hi, _, _, local, shape = _bounds(data, 'lab_centered', baseline_degree)
+        lo, hi, _, _, local, shape = _bounds(data, baseline_degree)
         radius = np.maximum(1., np.max(np.abs(self.u), axis=1))
         self.area = np.maximum(1., local[:, 2]/self.peak)
         self.local_scale = np.column_stack((self.peak, self.peak/radius, self.peak*self.area))
@@ -105,7 +102,7 @@ class _SpectralObjective:
         inside, extra = np.array([self.inlier_base, self.extra_base])*np.exp(log_scale)
         coefficients = self.context['prior_mean']+self.context['prior_scale']*z
         q = self.context['basis']@coefficients
-        mass, derivative = _mass_and_gradient(self.velocity, self.dv, q, tophat=self.tophat)
+        mass, derivative = _mass_and_gradient(self.velocity, self.dv, q)
         design = np.stack((self.baseline_design[0], self.baseline_design[1],
                            self.area[:, None]*mass, *self.baseline_design[2:]), axis=-1)
         predicted = np.einsum('npj,nj->np', design, local)
@@ -139,7 +136,7 @@ class _SpectralObjective:
 
     def initial(self, coefficients, epsilon=.15, log_scale=None):
         mass, _ = _mass_and_gradient(self.velocity, self.dv,
-                                    self.context['basis']@coefficients, tophat=self.tophat)
+                                    self.context['basis']@coefficients)
         design = np.stack((self.baseline_design[0], self.baseline_design[1],
                            self.area[:, None]*mass, *self.baseline_design[2:]), axis=-1)
         local = []
@@ -164,7 +161,7 @@ def _initial_residual_jacobian(theta, objective, scatter):
     z = theta[o.nlocal:].reshape(o.context['prior_mean'].shape)
     coefficients = o.context['prior_mean']+o.context['prior_scale']*z
     mass, derivative = _mass_and_gradient(o.velocity, o.dv,
-        o.context['basis']@coefficients, tophat=o.tophat)
+        o.context['basis']@coefficients)
     design = np.stack((o.baseline_design[0], o.baseline_design[1],
                        o.area[:, None]*mass, *o.baseline_design[2:]), axis=-1)
     predicted = np.einsum('npj,nj->np', design, local)
@@ -201,18 +198,18 @@ def _initialize(objective, scatter, max_nfev, coefficient_guard=12.):
     return np.r_[result.x, .2, np.log(scatter/o.inlier_base), 0.]
 
 
-def _independent_fits(data, tophat, baseline_degree, max_nfev):
+def _independent_fits(data, baseline_degree, max_nfev):
     """Keep every line in the joint fit even if its comparison fit fails."""
     from .fitting import _optimize_block
-    lo, hi, slo, shi, seed_local, seed_shape = _bounds(data, 'lab_centered', baseline_degree)
+    lo, hi, slo, shi, seed_local, seed_shape = _bounds(data, baseline_degree)
     local, shape = np.full_like(seed_local, np.nan), np.full_like(seed_shape, np.nan)
     success, reports = np.zeros(len(data.x0), bool), []
     started = perf_counter()
     for i in range(len(data.x0)):
         try:
-            li, si, solution = _optimize_block(data.select([i]), tophat, max_nfev,
+            li, si, solution = _optimize_block(data.select([i]), max_nfev,
                 lo[i:i+1], hi[i:i+1], slo, shi, seed_local[i:i+1], seed_shape[i],
-                float(np.median(data.dv)), False, 'lab_centered', baseline_degree)
+                False, baseline_degree)
             local[i], shape[i], success[i] = li[0], si, True
             reports.append(dict(line_id=str(data.line_ids[i]), success=True,
                                 cost=float(solution.cost), message=str(solution.message)))
@@ -254,7 +251,6 @@ def _map_fit(objective, maxiter, max_nfev):
 def _numpyro_model(o):
     """Same density as the MAP objective, up to parameter-independent constants."""
     import jax.numpy as jnp
-    import jax.scipy as jsp
     import numpyro
     import numpyro.distributions as dist
 
@@ -272,9 +268,6 @@ def _numpyro_model(o):
 
     def component(center, sigma):
         v = velocity-center
-        if o.tophat:
-            return .5*(jsp.special.erf((v+dv/2)/(jnp.sqrt(2)*sigma))
-                       -jsp.special.erf((v-dv/2)/(jnp.sqrt(2)*sigma)))
         return dv*jnp.exp(-.5*(v/sigma)**2)/(jnp.sqrt(2*jnp.pi)*sigma)
 
     mass = (1-fraction)*component(mu, s1)+fraction*component(mu+delta, s2)
@@ -328,7 +321,142 @@ def _sample_mixture(o, theta, *, warmup, samples, chains, seed, target_accept,
     return draws, diagnostics
 
 
-def fit_chebyshev(input_data, *, degree, nuts, tophat, baseline_degree, warmup,
+def _validate_sampling(warmup, samples, chains, max_tree_depth, target_accept):
+    for name, value in [('warmup', warmup), ('samples', samples), ('chains', chains),
+                        ('max_tree_depth', max_tree_depth)]:
+        if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or value < 1:
+            raise ValueError(f'{name} must be a positive integer')
+    if not 0 < target_accept < 1:
+        raise ValueError('target_accept must be between 0 and 1')
+
+
+def _objective_at_map(order, settings):
+    """Reconstruct sampler coordinates from the saved MAP, including its priors."""
+    c = order.chebyshev
+    context = dict(domain=c.domain, prior_mean=c.prior_mean, prior_scale=c.prior_scale,
+                   basis=_basis(order.data.lab_wave, c.domain, c.degree))
+    objective = _SpectralObjective(order.data, context, baseline_degree=order.baseline_degree,
+                                   **settings['mixture'])
+    if not np.array_equal(objective.peak, c.observed_peak):
+        raise ValueError('Observed peaks differ from the saved MAP; refit changed data before sampling')
+    inside, outside, epsilon = c.mixture_map
+    extra = np.sqrt((outside-inside)*(outside+inside))
+    theta = np.r_[(c.map_local/objective.local_scale).ravel(),
+                  ((c.coefficients-c.prior_mean)/c.prior_scale).ravel(), epsilon,
+                  np.log([inside/objective.inlier_base, extra/objective.extra_base])]
+    if not np.isfinite(theta).all():
+        raise ValueError('Stored MAP cannot be converted to finite sampler coordinates')
+    return objective, theta
+
+
+def sample_chebyshev_result(result, *, warmup, samples, chains, seed, target_accept,
+                            max_tree_depth, progress):
+    """Add posterior draws to stored MAPs, allowing a different degree per order."""
+    from .results import FitResult, OrderFit
+    if (result.settings.get('mode') != 'chebyshev' or not result.orders
+            or any(o.chebyshev is None for o in result.orders)):
+        raise ValueError('sample_nuts requires a nonempty Chebyshev result')
+    _validate_sampling(warmup, samples, chains, max_tree_depth, target_accept)
+    source = deepcopy(result)
+    prepared = [(o, *_objective_at_map(o, source.settings))
+                for o in sorted(source.orders, key=lambda o: o.data.order)]
+    orders = []
+    for index, (order, objective, theta) in enumerate(prepared):
+        if progress:
+            print(f'Order {order.data.order}: degree {order.chebyshev.degree}; NUTS from stored MAP')
+        draws, report = _sample_mixture(objective, theta, warmup=warmup, samples=samples,
+            chains=chains, seed=(seed+index) % 2**32, target_accept=target_accept,
+            max_tree_depth=max_tree_depth, progress=progress)
+        curve = replace(order.chebyshev, coefficient_samples=draws['coefficients'],
+            inlier_probability_samples=draws['inlier_probability'], mixture_samples=draws['mixture'],
+            diagnostics=dict(order.chebyshev.diagnostics, nuts=report))
+        orders.append(OrderFit(order.data, draws['local'], draws['shape'],
+                               baseline_degree=order.baseline_degree, chebyshev=curve))
+        if progress:
+            print('  NUTS:', report)
+    settings = dict(source.settings, nuts=True, inference='nuts', warmup=int(warmup),
+        samples=int(samples), chains=int(chains), seed=int(seed),
+        target_accept=float(target_accept), max_tree_depth=int(max_tree_depth))
+    return FitResult(orders, settings)
+
+
+def fit_chebyshev_degrees(input_data, *, degrees, nuts, baseline_degree, warmup,
+                          samples, chains, seed, target_accept, max_tree_depth,
+                          max_nfev, maxiter, progress):
+    """Run the ordinary MAP fit for each degree/order, then retain each winner.
+
+    BIC_MAP uses valid pixels as n and counts coefficients, line-local parameters
+    and the three mixture parameters. Independent comparison fits are not part
+    of this likelihood. Failed optimizations are recorded, never selected.
+    """
+    from .results import FitResult
+    try:
+        degrees = sorted({_degree(value) for value in degrees})
+    except TypeError as exc:
+        raise ValueError('degrees must be a nonempty iterable of nonnegative integers') from exc
+    if not degrees:
+        raise ValueError('degrees must be a nonempty iterable of nonnegative integers')
+    if not isinstance(nuts, (bool, np.bool_)):
+        raise ValueError('nuts must be a boolean')
+    if nuts:
+        _validate_sampling(warmup, samples, chains, max_tree_depth, target_accept)
+    data = [input_data] if isinstance(input_data, OrderData) else list(input_data)
+    if not data or len({d.order for d in data}) != len(data):
+        raise ValueError('Need nonempty data with unique order identifiers')
+    selected, rows = [], []
+    for d in sorted(data, key=lambda d: d.order):
+        candidates = []
+        for degree in degrees:
+            row = dict(order=int(d.order), degree=degree, logL=None, k=None,
+                       n_pixels=int(d.mask.sum()), BIC_MAP=None, success=False, error=None)
+            if len(np.unique(d.lab_wave)) < degree+1:
+                row['error'] = f'Degree {degree} needs at least {degree+1} distinct reference wavelengths'
+            else:
+                try:
+                    candidate = fit_chebyshev(d, degree=degree, nuts=False,
+                        baseline_degree=baseline_degree, warmup=warmup, samples=samples,
+                        chains=chains, seed=seed, target_accept=target_accept,
+                        max_tree_depth=max_tree_depth, max_nfev=max_nfev, maxiter=maxiter, progress=False)
+                except RuntimeError as exc:
+                    row['error'] = str(exc)
+                else:
+                    c = candidate.orders[0].chebyshev
+                    loglik = c.diagnostics['optimization']['log_likelihood']
+                    k = c.coefficients.size+c.map_local.size+3
+                    score = float(-2*loglik+k*np.log(row['n_pixels']))
+                    row.update(logL=loglik, k=k, BIC_MAP=score, success=True)
+                    candidates.append((score, degree, candidate))
+            rows.append(row)
+            if progress and row['error'] is not None:
+                print(f"Order {d.order}, degree {degree}: skipped ({row['error']})")
+        if not candidates:
+            raise RuntimeError(f'Order {d.order}: no candidate degree converged; '
+                               + '; '.join(r['error'] for r in rows if r['order'] == d.order))
+        score, degree, best = min(candidates, key=lambda item: (item[0], item[1]))
+        selected.append(best)
+        for row in rows:
+            if row['order'] == d.order:
+                row['selected'] = row['degree'] == degree
+                row['delta_BIC_MAP'] = row['BIC_MAP']-score if row['success'] else None
+        if progress:
+            print(f'Order {d.order}: degree {degree}, BIC_MAP={score:.2f} '
+                  f'({len(candidates)}/{len(degrees)} candidates converged)')
+    orders = [r.orders[0] for r in selected]
+    settings = deepcopy(selected[0].settings)
+    settings.pop('degree')
+    settings.pop('coefficient_prior')
+    settings.update(degree_by_order={str(o.data.order): o.chebyshev.degree for o in orders},
+        coefficient_prior_by_order={str(r.orders[0].data.order): r.settings['coefficient_prior']
+                                    for r in selected},
+        degree_search=dict(degrees=degrees, criterion='BIC_MAP', sample_size='valid_pixels', scores=rows))
+    result = FitResult(orders, settings)
+    if nuts:
+        return sample_chebyshev_result(result, warmup=warmup, samples=samples, chains=chains,
+            seed=seed, target_accept=target_accept, max_tree_depth=max_tree_depth, progress=progress)
+    return result
+
+
+def fit_chebyshev(input_data, *, degree, nuts, baseline_degree, warmup,
                   samples, chains, seed, target_accept, max_tree_depth, max_nfev,
                   maxiter, progress):
     """Independent LS comparison, joint spectral MAP, then optional NUTS."""
@@ -354,7 +482,7 @@ def fit_chebyshev(input_data, *, degree, nuts, tophat, baseline_degree, warmup,
                 or np.any(~np.isfinite(d.y[d.mask])) or np.any(~np.isfinite(d.noise[d.mask]))
                 or np.any(d.noise[d.mask] <= 0) or np.any(~np.isfinite(d.dv)) or np.any(d.dv <= 0)):
             raise ValueError('Need valid observations, positive noise, and positive sampling widths')
-        objectives.append(_SpectralObjective(d, _prepare(d, config), tophat=tophat,
+        objectives.append(_SpectralObjective(d, _prepare(d, config),
             baseline_degree=baseline_degree, inlier_scale_prior=.01, outlier_extra_prior=.05,
             log_scale_sd=(.7, .7), outlier_beta=(1., 4.)))
     orders = []
@@ -363,7 +491,7 @@ def fit_chebyshev(input_data, *, degree, nuts, tophat, baseline_degree, warmup,
         if progress:
             print(f'Order {d.order}: {len(d.x0)} lines; independent LS then degree {degree} spectral MAP'
                   + (' + NUTS' if nuts else ''))
-        ilocal, ishape, success, individual_report = _independent_fits(d, tophat, baseline_degree, max_nfev)
+        ilocal, ishape, success, individual_report = _independent_fits(d, baseline_degree, max_nfev)
         theta, point, map_report = _map_fit(o, maxiter, max_nfev)
         draws, nuts_report = {}, None
         if nuts:
@@ -381,14 +509,14 @@ def fit_chebyshev(input_data, *, degree, nuts, tophat, baseline_degree, warmup,
             mixture_samples=draws.get('mixture', np.empty((0, 3))),
             diagnostics=dict(individual=individual_report, optimization=map_report, nuts=nuts_report))
         orders.append(OrderFit(d, draws.get('local', point['local'][None]),
-            draws.get('shape', point['shape'][None]), model='lab_centered',
+            draws.get('shape', point['shape'][None]),
             baseline_degree=baseline_degree, chebyshev=curve))
         if progress:
             print(f"  individual {individual_report['seconds']:.2f}s; MAP {map_report['seconds']:.2f}s; "
                   f"{np.sum(curve.inlier_probability > .5)}/{len(d.x0)} lines with P(inlier) > 0.5")
             if nuts:
                 print('  NUTS:', nuts_report)
-    settings = dict(mode='chebyshev', model='lab_centered', tophat=bool(tophat),
+    settings = dict(mode='chebyshev',
         baseline_degree=int(baseline_degree), degree=int(degree), nuts=bool(nuts),
         inference='nuts' if nuts else 'map', seed=int(seed), max_nfev=int(max_nfev), maxiter=int(maxiter),
         individual_inference='multistart_least_squares', initial_scatter=.02,

@@ -2,11 +2,10 @@
 from dataclasses import dataclass
 from pathlib import Path
 import re
-import warnings
 import numpy as np
 import pandas as pd
-from scipy.optimize import curve_fit, brentq
-from .models import C_KMS, pixel_mass
+from scipy.optimize import brentq
+from .models import C_KMS
 from .data import OrderData
 
 
@@ -48,72 +47,15 @@ def read_ecidentify(path):
     return WavelengthSolution(*records[-1], catalog)
 
 
-def _model(x, bkg, slope, flux, center, s1, fraction2, s2, delta):
-    return bkg+slope*(x-center)+flux*pixel_mass(x-center, [s1, fraction2, s2, delta], 1.)
-
-
-def _width(shape):
-    # Fast effective width and peak for screening/covariance propagation.
-    s1, f, s2, delta = shape
-    extent = max(15., abs(delta)+12*max(s1, s2))
-    grid = np.linspace(-extent, extent, 801)
-    profile = pixel_mass(grid, shape, 1.)
-    peak = int(np.argmax(profile))
-    half = .5*profile[peak]
-    left_candidates = np.flatnonzero(profile[:peak] <= half)
-    right_candidates = np.flatnonzero(profile[peak+1:] <= half)
-    if not len(left_candidates) or not len(right_candidates):
-        return np.nan, np.nan
-    left, right = left_candidates[-1], peak+1+right_candidates[0]
-    lo = np.interp(half, profile[left:left+2], grid[left:left+2])
-    hi = np.interp(half, profile[right-1:right+1][::-1], grid[right-1:right+1][::-1])
-    return hi-lo, grid[peak]
-
-
-def _screen_fit(x, y, x0, seed):
-    bkg = float(np.median(np.r_[y[:3], y[-3:]]))
-    amp = max(float(y.max()-bkg), 1.)
-    def gaussian(x, b, slope, a, center, sigma):
-        return b+slope*(x-center)+a*np.exp(-.5*((x-center)/sigma)**2)
-    try:
-        p, _ = curve_fit(gaussian, x, y, p0=[bkg, 0, amp, x[np.argmax(y)], 1.7],
-            bounds=([-np.inf, -np.inf, 0, x0-2, .5], [np.inf, np.inf, np.inf, x0+2, 5]), maxfev=20000)
-    except (ValueError, RuntimeError):
-        p = [bkg, 0, amp, x0, 1.7]
-    b, slope, a, center, sigma = p
-    lower = np.array([-np.inf, -np.inf, 0, x0-2, .4, .001, .4, -4])
-    upper = np.array([np.inf, np.inf, np.inf, x0+2, 4, .49, 6, 4])
-    initial = [b, slope, a*sigma*np.sqrt(2*np.pi), center,
-               np.clip(.85*sigma, .41, 3.9), .18, np.clip(1.35*sigma, .41, 5.9), .8]
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', category=RuntimeWarning)
-        best, cov = curve_fit(_model, x, y, p0=initial, bounds=(lower, upper), maxfev=50000)
-    width, peak = _width(best[4:])
-    relative_error = np.nan
-    covariance = cov[4:, 4:]
-    if np.isfinite(covariance).all():
-        eigenvalues, vectors = np.linalg.eigh((covariance+covariance.T)/2)
-        transform = vectors@np.diag(np.sqrt(np.clip(eigenvalues, 0, None)))
-        rng = np.random.default_rng(seed)
-        draws = best[4:]+rng.standard_normal((20000, 4))@transform.T
-        shapes = draws[np.all((draws > lower[4:]) & (draws < upper[4:]), axis=1)][:200]
-        widths = np.array([_width(shape)[0] for shape in shapes])
-        widths = widths[np.isfinite(widths) & (widths > 0)]
-        if len(widths) >= 50:
-            p16, p50, p84 = np.percentile(widths, [16, 50, 84])
-            relative_error = (p84-p16)/(2*p50)
-    return width, best[3]+peak, relative_error
-
-
 def select_lines(path, wavelength_file, *, orders, gain, read_noise, order_offset=100,
                  half_window=7, saturation=51000, blend_guard=2., resolving_power=65000,
-                 max_center_shift=1., max_width_error=.1, fit_spectrum=None, screen_fit=False):
-    """Select isolated, unsaturated lines, optionally screening centers and widths.
+                 fit_spectrum=None):
+    """Select isolated, unsaturated lines without a preliminary fit.
 
     Selection always uses path and its ecidentify database. Optional fit_spectrum
-    supplies a wavelength-calibrated IRAF linear multispec sum for fitting.
-    screen_fit=False skips the preliminary fit and ignores max_center_shift and
-    max_width_error. Catalog, blend, saturation and usable-cutout checks remain.
+    supplies a wavelength-calibrated IRAF linear multispec sum for fitting,
+    either FITS or a ThAr pickle with data/header (using lam and flux).
+    Selection uses catalog, blend, saturation and usable-cutout checks only.
     Returned coordinates increase redward; dv is a positive sampling width.
     """
     from astropy.io import fits
@@ -124,9 +66,7 @@ def select_lines(path, wavelength_file, *, orders, gain, read_noise, order_offse
     orders = list(orders)
     selection = dict(orders=np.asarray(orders).tolist(), gain=gain, read_noise=read_noise,
                      order_offset=order_offset, half_window=half_window, saturation=saturation,
-                     blend_guard=blend_guard, resolving_power=resolving_power,
-                     max_center_shift=max_center_shift, max_width_error=max_width_error,
-                     screen_fit=screen_fit)
+                     blend_guard=blend_guard, resolving_power=resolving_power)
     # NumPy scalar arguments are common in notebooks; store JSON-native values.
     selection = {key: value.item() if isinstance(value, np.generic) else value
                  for key, value in selection.items()}
@@ -151,14 +91,6 @@ def select_lines(path, wavelength_file, *, orders, gain, read_noise, order_offse
         if (nearest <= blend_guard*C_KMS/resolving_power or not np.isfinite(y).all()
                 or len(x) < 9 or (saturation is not None and np.any(y >= saturation))):
             continue
-        if screen_fit:
-            try:
-                width, peak, error = _screen_fit(x-x0, y, 0., int(ap*10000000+round(x0*1000)))
-            except (ValueError, RuntimeError, FloatingPointError, np.linalg.LinAlgError):
-                continue
-            if (not np.isfinite([width, peak, error]).all()
-                    or abs(peak) > max_center_shift or error > max_width_error):
-                continue
         wave = float(solution.wavelength(x0, row.db_order))
         dispersion = float(solution.dispersion(x0, row.db_order))
         target = lambda pixel: float(solution.wavelength(pixel, row.db_order))-row.lab_wave

@@ -94,7 +94,7 @@ def _prepare(data, config):
         raise ValueError('Chebyshev IP requires finite lab_wave for every line')
     if len(np.unique(wave)) < config.degree+1:
         raise ValueError(f'Order {data.order}: degree {config.degree} requires at least '
-                         f'{config.degree+1} distinct laboratory wavelengths')
+                         f'{config.degree+1} distinct reference wavelengths')
     domain = np.array([wave.min(), wave.max()] if config.wavelength_domain is None
                       else config.wavelength_domain, dtype=float)
     basis = _basis(wave, domain, config.degree)

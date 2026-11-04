@@ -2,12 +2,11 @@
 import numpy as np
 import pandas as pd
 import pytest
-from scipy.special import erf
 from gaoesrvip import OrderData, load_result
 from gaoesrvip.results import FitResult, OrderFit
 
 
-def residual_case(model, mode, tophat, baseline_degree=1):
+def residual_case(mode, baseline_degree=1):
     table = np.array([100.2, 201.6])
     x = np.floor(table[:, None])+np.arange(-7., 8.)
     dv = np.array([1.1, 1.4])
@@ -16,10 +15,7 @@ def residual_case(model, mode, tophat, baseline_degree=1):
     local = np.array([[15., .2, 1000.], [30., -.3, 1500.]])
     shapes = np.array([[s, .5, s, 1., m] for s, m in zip(width, mu)])
     center = table
-    if model == 'free_centers':
-        center = table+np.array([.25, -.3])
-        local = np.column_stack((local, center))
-        shapes = np.array([[s, .3, s, 0.] for s in width])
+
     if baseline_degree == 2:
         local = np.column_stack((local, [.12, -.08]))
     residual = np.array([2.+np.sin(np.arange(15)), np.linspace(-3., 6., 15)])
@@ -27,16 +23,10 @@ def residual_case(model, mode, tophat, baseline_degree=1):
     y, peaks = [], []
     for i, (s, scale) in enumerate(zip(width, dv)):
         def gaussian(v, mu):
-            if tophat:
-                return .5*(erf((v+scale/2-mu)/(np.sqrt(2)*s))
-                           - erf((v-scale/2-mu)/(np.sqrt(2)*s)))
+
             return scale*np.exp(-.5*((v-mu)/s)**2)/(np.sqrt(2*np.pi)*s)
-        if model == 'lab_centered':
-            mass = lambda v: .5*gaussian(v, mu[i])+.5*gaussian(v, mu[i]+1.)
-            peak_velocity = mu[i]+.5  # Unique symmetry-axis maximum since delta < 2*sigma.
-        else:
-            mass = lambda v: gaussian(v, 0.)
-            peak_velocity = 0.
+        mass = lambda v: .5*gaussian(v, mu[i])+.5*gaussian(v, mu[i]+1.)
+        peak_velocity = mu[i]+.5
         offset = x[i]-center[i]
         peak = local[i, 2]*mass(peak_velocity)
         assert local[i, 2]*mass(offset*scale).max() < peak  # Subpixel phase must not set the denominator.
@@ -48,17 +38,15 @@ def residual_case(model, mode, tophat, baseline_degree=1):
     d = OrderData(104, x, y, noise, np.ones_like(x, bool), table, dv, ['a', 'b'],
                   lab_wave=[5000., 5100.], table_pixel=table)
     shape = shapes[0] if mode == 'common' else shapes
-    result = FitResult([OrderFit(d, local[None], shape[None], model=model, baseline_degree=baseline_degree)],
-                       dict(mode=mode, model=model, tophat=tophat, baseline_degree=baseline_degree))
+    result = FitResult([OrderFit(d, local[None], shape[None], baseline_degree=baseline_degree)],
+                       dict(mode=mode, baseline_degree=baseline_degree))
     return result, residual, np.array(peaks)
 
 
-@pytest.mark.parametrize('model', ['free_centers', 'lab_centered'])
 @pytest.mark.parametrize('mode', ['common', 'individual'])
-@pytest.mark.parametrize('tophat', [True, False])
 @pytest.mark.parametrize('baseline_degree', [1, 2])
-def test_residual_units_and_continuous_peak(model, mode, tophat, baseline_degree):
-    result, residual, peaks = residual_case(model, mode, tophat, baseline_degree)
+def test_residual_units_and_continuous_peak(mode, baseline_degree):
+    result, residual, peaks = residual_case(mode, baseline_degree)
     order = result.orders[0]
     before = order.local_samples.copy(), order.shape_samples.copy(), order.data.y.copy()
     summary = result.residual_summary()
@@ -74,9 +62,8 @@ def test_residual_units_and_continuous_peak(model, mode, tophat, baseline_degree
         np.testing.assert_array_equal(actual, expected)
 
 
-@pytest.mark.parametrize('model', ['free_centers', 'lab_centered'])
-def test_masked_invalid_pixels_and_inclusive_table_window(model):
-    result, residual, peaks = residual_case(model, 'individual', True)
+def test_masked_invalid_pixels_and_inclusive_table_window():
+    result, residual, peaks = residual_case('individual')
     d = result.orders[0].data
     d.mask[0, 0] = False
     d.y[0, 0] = 1e12
@@ -106,7 +93,7 @@ def test_masked_invalid_pixels_and_inclusive_table_window(model):
 
 
 def test_summary_uses_parameter_medians():
-    result, residual, peaks = residual_case('lab_centered', 'common', False)
+    result, residual, peaks = residual_case('common')
     order = result.orders[0]
     order.local_samples = np.repeat(order.local_samples, 3, axis=0)
     order.shape_samples = np.repeat(order.shape_samples, 3, axis=0)
@@ -119,14 +106,14 @@ def test_summary_uses_parameter_medians():
     np.testing.assert_allclose(summary.rms_peak_percent, 100*np.sqrt(np.mean(residual**2, axis=1))/peaks)
 
 
-def test_no_pixels_and_missing_legacy_table_reference():
-    result, _, _ = residual_case('free_centers', 'common', False)
+def test_no_pixels_and_missing_table_reference():
+    result, _, _ = residual_case('common')
     empty = result.residual_summary(velocity_range=(100, 101))
     assert len(empty) == 2 and (empty.n_pixels == 0).all()
     assert empty[['rms_peak_percent', 'rms_sigma', 'vmin_kms', 'vmax_kms']].isna().all().all()
     result.orders[0].data.table_pixel[:] = np.nan
     summary = result.residual_summary()
-    assert np.isfinite(summary[['rms_peak_percent', 'rms_sigma']]).all().all()
+    assert summary[['rms_peak_percent', 'rms_sigma']].isna().all().all()
     assert summary[['vmin_kms', 'vmax_kms']].isna().all().all()
     with pytest.raises(ValueError, match='finite table_pixel'):
         result.residual_summary(velocity_range=(-5, 5))
@@ -134,15 +121,14 @@ def test_no_pixels_and_missing_legacy_table_reference():
 
 @pytest.mark.parametrize('window', [(1, -1), (0,), (0, 1, 2), (0, np.nan), (0, np.inf), 5])
 def test_invalid_velocity_range(window):
-    result = FitResult([], dict(mode='common', tophat=True))
+    result = FitResult([], dict(mode='common'))
     with pytest.raises(ValueError, match='velocity_range must be two finite bounds'):
         result.residual_summary(velocity_range=window)
 
 
-@pytest.mark.parametrize('model', ['free_centers', 'lab_centered'])
 @pytest.mark.parametrize('mode', ['common', 'individual'])
-def test_summary_csv_and_roundtrip(tmp_path, model, mode):
-    result, _, _ = residual_case(model, mode, True)
+def test_summary_csv_and_roundtrip(tmp_path, mode):
+    result, _, _ = residual_case(mode)
     output = result.save(tmp_path/'result', figures=False)
     summary = result.residual_summary()
     pd.testing.assert_frame_equal(pd.read_csv(output/'residual_summary.csv'), summary)
@@ -152,7 +138,7 @@ def test_summary_csv_and_roundtrip(tmp_path, model, mode):
 
 def test_summary_plot_matches_table():
     import matplotlib.pyplot as plt
-    result, _, _ = residual_case('lab_centered', 'individual', False)
+    result, _, _ = residual_case('individual')
     window = (-5, 5)
     summary = result.residual_summary(velocity_range=window)
     fig = result.plot_residual_summary(velocity_range=window)

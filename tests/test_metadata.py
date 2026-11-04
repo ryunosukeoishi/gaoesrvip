@@ -20,17 +20,14 @@ def test_selection_metadata_through_fit_and_roundtrip(tmp_path, monkeypatch):
     fits.writeto(thar, image)
     wavelength.write_text(database([[4, 105, 50, 5000, 5000, 1, 1, 1],
                                     [5, 106, 70, 4953, 4953, 1, 1, 1]], constant=525000))
-    monkeypatch.setattr('gaoesrvip.selection._screen_fit', lambda *args: (4., 0., .02))
     data = select_lines(thar, wavelength, orders=np.array([104, 105, 106]),
                         gain=np.float64(1.935), read_noise=np.float32(4),
                         order_offset=np.int64(100), half_window=np.int64(9), saturation=None,
-                        blend_guard=np.float32(1.5), resolving_power=np.int64(60000),
-                        max_center_shift=np.float64(.5), max_width_error=np.float64(.05))
+                        blend_guard=np.float32(1.5), resolving_power=np.int64(60000))
     expected = dict(
         input_files=dict(spectrum=str(thar.resolve()), wavelength_solution=str(wavelength.resolve())),
         selection=dict(orders=[104, 105, 106], gain=1.935, read_noise=4., order_offset=100,
-                       half_window=9, saturation=None, blend_guard=1.5, resolving_power=60000,
-                       max_center_shift=.5, max_width_error=.05, screen_fit=False))
+                       half_window=9, saturation=None, blend_guard=1.5, resolving_power=60000))
     expected['coordinate'] = dict(velocity_positive='red', kind='native',
                                   original_pixel_scale=1, original_pixel_offset=0)
     expected['noise'] = dict(model='diagonal Poisson plus read noise', ncombine=1)
@@ -44,19 +41,19 @@ def test_selection_metadata_through_fit_and_roundtrip(tmp_path, monkeypatch):
     other = select_lines(thar, wavelength, orders=[105], gain=2., read_noise=3.)[0]
     assert other.metadata['selection'] == dict(orders=[105], gain=2., read_noise=3.,
         order_offset=100, half_window=7, saturation=51000, blend_guard=2.,
-        resolving_power=65000, max_center_shift=1., max_width_error=.1, screen_fit=False)
+        resolving_power=65000)
 
     # The test checks metadata transport, without numerical fitting or sampling.
-    def initialize(d, mode, tophat, max_nfev, model, baseline_degree):
-        lo, hi, slo, shi, local, shape = _bounds(d, model, baseline_degree)
+    def initialize(d, mode, max_nfev, baseline_degree):
+        lo, hi, slo, shi, local, shape = _bounds(d, baseline_degree)
         return local, np.median(shape, axis=0), (lo, hi, slo, shi)
 
-    def sample(d, mode, tophat, bounds, local, shape, **kwargs):
+    def sample(d, mode, bounds, local, shape, **kwargs):
         return np.repeat(local[None], 4, axis=0), np.repeat(shape[None], 4, axis=0)
 
     monkeypatch.setattr('gaoesrvip.fitting._optimize', initialize)
     monkeypatch.setattr('gaoesrvip.fitting._sample', sample)
-    result = fit([other, data[0]], model='lab_centered', baseline_degree=2, progress=False)
+    result = fit([other, data[0]], baseline_degree=2, progress=False)
     assert result.metadata == {104: expected, 105: other.metadata}
     result.metadata[104]['selection']['half_window'] = 999
     assert result.metadata[104] == expected  # Inspection returns a detached copy.
@@ -78,7 +75,7 @@ def test_selection_metadata_through_fit_and_roundtrip(tmp_path, monkeypatch):
 
 
 def test_manual_line_filter_preserves_original_metadata_and_final_lines(tmp_path):
-    result, _, _ = residual_case('lab_centered', 'common', False)
+    result, _, _ = residual_case('common')
     order = result.orders[0]
     order.data.metadata = dict(selection=dict(half_window=10, orders=[104]))
     selected = order.data.select([1])
@@ -94,19 +91,17 @@ def test_manual_line_filter_preserves_original_metadata_and_final_lines(tmp_path
     np.testing.assert_array_equal(restored.orders[0].data.lab_wave, [5100.])
 
 
-@pytest.mark.parametrize('schema', [1, 2, 3])
+@pytest.mark.parametrize('schema', [2, 3])
 def test_old_results_without_metadata_load_as_unknown(tmp_path, schema):
-    model = 'free_centers' if schema == 1 else 'lab_centered'
-    result, _, _ = residual_case(model, 'common', False)
+    result, _, _ = residual_case('common')
     output = result.save(tmp_path/'old', figures=False)
     path = output/'result.json'
     saved = json.loads(path.read_text())
     del saved['data_metadata']
     saved['schema_version'] = schema
+    saved['settings'].update(model='lab_centered', tophat=False)
     if schema < 3:
         del saved['settings']['baseline_degree']
-    if schema == 1:
-        del saved['settings']['model']
     path.write_text(json.dumps(saved))
     restored = load_result(output)
     assert restored.metadata == {104: {}}

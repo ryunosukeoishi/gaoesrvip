@@ -11,7 +11,7 @@ from gaoesrvip.chebyshev import ChebyshevIP, _prepare, _coordinates_to_shape, cu
 from gaoesrvip.spectral_mixture import _SpectralObjective, _numpyro_model, _initial_residual_jacobian
 
 
-def synthetic(n=7, *, tophat=False, baseline_degree=1, contaminated=True):
+def synthetic(n=7, *, baseline_degree=1, contaminated=True):
     rng = np.random.default_rng(12)
     wave = np.linspace(5000., 5100., n)
     x = np.tile(np.arange(-9., 10.), (n, 1))
@@ -20,8 +20,7 @@ def synthetic(n=7, *, tophat=False, baseline_degree=1, contaminated=True):
     q[:, 2] += np.linspace(-.04, .04, n)
     shape = _coordinates_to_shape(q)
     local = np.tile([25., .1, 4000.] + ([.015] if baseline_degree == 2 else []), (n, 1))
-    y = np.array([prediction(xi, step, li, si, tophat=tophat, model='lab_centered',
-                            reference=0., baseline_degree=baseline_degree)
+    y = np.array([prediction(xi, step, li, si, reference=0., baseline_degree=baseline_degree)
                   for xi, step, li, si in zip(x, dv, local, shape)])
     y += rng.normal(0., 2., y.shape)
     if contaminated:
@@ -30,10 +29,8 @@ def synthetic(n=7, *, tophat=False, baseline_degree=1, contaminated=True):
                      np.zeros(n), dv, np.arange(n).astype(str), wave, wave, np.zeros(n))
 
 
-def objective(data, *, degree=1, tophat=False, baseline_degree=1):
-    return _SpectralObjective(data, _prepare(data, ChebyshevIP(degree)),
-        tophat=tophat, baseline_degree=baseline_degree, inlier_scale_prior=.01,
-        outlier_extra_prior=.05, log_scale_sd=(.7, .7), outlier_beta=(1., 4.))
+def objective(data, *, degree=1, baseline_degree=1):
+    return _SpectralObjective(data, _prepare(data, ChebyshevIP(degree)), baseline_degree=baseline_degree, inlier_scale_prior=.01, outlier_extra_prior=.05, log_scale_sd=(.7, .7), outlier_beta=(1., 4.))
 
 
 @pytest.fixture(scope='module')
@@ -41,15 +38,15 @@ def fitted():
     return fit(synthetic(), mode='chebyshev', degree=1, progress=False)
 
 
-@pytest.mark.parametrize('tophat,baseline_degree', [(False, 1), (True, 2)])
-def test_gradient_and_numpyro_density_match(tophat, baseline_degree):
+@pytest.mark.parametrize('baseline_degree', [1, 2])
+def test_gradient_and_numpyro_density_match(baseline_degree):
     import jax
     jax.config.update('jax_enable_x64', True)
     from numpyro.infer.util import log_density
-    d = synthetic(4, tophat=tophat, baseline_degree=baseline_degree)
+    d = synthetic(4, baseline_degree=baseline_degree)
     d.mask[0, -2:] = False
     d.y[~d.mask] = np.nan
-    o = objective(d, tophat=tophat, baseline_degree=baseline_degree)
+    o = objective(d, baseline_degree=baseline_degree)
     theta = o.initial(o.context['prior_mean'], epsilon=.2, log_scale=np.array([.1, -.1]))
     value, grad = o(theta)
     numeric = approx_derivative(lambda t: o(t)[0], theta, method='3-point').ravel()
@@ -130,8 +127,11 @@ def test_portable_map_results_and_figures(fitted, tmp_path):
     before = set(plt.get_fignums())
     save_analysis_figures(restored, tmp_path/'figures', dpi=30)
     assert set(plt.get_fignums()) == before
-    assert (tmp_path/'figures/cumulants.png').exists()
-    assert (tmp_path/'figures/overlay.png').exists()
+    for order in (104, 105):
+        assert (tmp_path/f'figures/cumulants_order_{order}.png').exists()
+        assert (tmp_path/f'figures/overlay_inliers_order_{order}.png').exists()
+    for name in ('residual_summary', 'rms_vs_peak', 'cumulants_all_orders'):
+        assert (tmp_path/f'figures/{name}.png').exists()
     assert len(list((tmp_path/'figures').glob('lines_order_*.png'))) == 2
     fig = restored.overlay(min_inlier_probability=.5, wavelength_range=(5000, 5050))
     assert '3 lines' in fig.axes[0].get_title()
@@ -139,6 +139,13 @@ def test_portable_map_results_and_figures(fitted, tmp_path):
     with pytest.raises(ValueError, match='No lines'):
         restored.overlay(min_inlier_probability=1.)
     assert len(restored.line_membership) == 14  # Plot filtering never changes fit membership.
+    fig = restored.plot_rms_vs_peak()
+    metrics = restored.residual_summary()
+    np.testing.assert_allclose(fig.axes[0].collections[0].get_offsets(),
+                              metrics[['observed_peak', 'rms_observed_peak_percent']])
+    np.testing.assert_allclose(fig.axes[0].collections[0].get_array(), metrics.inlier_probability)
+    assert fig.axes[0].get_xscale() == fig.axes[0].get_yscale() == 'log'
+    plt.close(fig)
 
 
 def test_short_nuts_and_credible_bands(tmp_path):
@@ -159,7 +166,7 @@ def test_short_nuts_and_credible_bands(tmp_path):
 
 
 @pytest.mark.parametrize('kwargs', [dict(degree=-1), dict(degree=10), dict(degree=True),
-    dict(nuts='yes'), dict(model='free_centers'), dict(maxiter=0), dict(nuts=True, samples=0)])
+    dict(nuts='yes'), dict(maxiter=0), dict(nuts=True, samples=0)])
 def test_invalid_settings_fail_before_fit(kwargs, monkeypatch):
     import gaoesrvip.spectral_mixture as sm
     def forbidden(*args, **kwargs):
