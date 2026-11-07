@@ -86,8 +86,8 @@ def read_sum(path):
     return spectra, int(total)
 
 
-def cut_sum(selected, summed, path, order_offset, gain, read_noise):
-    """Map central selections to sum samples without interpolation or screening fits."""
+def cut_sum(selected, summed, path, order_offset, read_noise):
+    """Map central selections to electron-count sum samples without interpolation."""
     spectra, total = summed
     result, skipped = [], []
     for original in selected:
@@ -107,7 +107,7 @@ def cut_sum(selected, summed, path, order_offset, gain, read_noise):
                 continue
             xp = np.arange(lo, hi+1, dtype=float)
             y = flux[lo-1:hi]
-            noise = np.sqrt(np.maximum(y, 0)/gain+total*(read_noise/gain)**2)
+            noise = np.sqrt(np.maximum(y, 0)+total*read_noise**2)
             mask = np.isfinite(y) & np.isfinite(noise) & (noise > 0)
             if mask.sum() < 9:
                 skipped.append((original.order, str(original.line_ids[i])))

@@ -47,24 +47,26 @@ def read_ecidentify(path):
     return WavelengthSolution(*records[-1], catalog)
 
 
-def select_lines(path, wavelength_file, *, orders, gain, read_noise, order_offset=100,
-                 half_window=7, saturation=51000, blend_guard=2., resolving_power=65000,
+def select_lines(path, wavelength_file, *, orders, read_noise, order_offset=100,
+                 half_window=7, saturation=51000*1.92, blend_guard=2., resolving_power=65000,
                  fit_spectrum=None):
     """Select isolated, unsaturated lines without a preliminary fit.
 
     Selection always uses path and its ecidentify database. Optional fit_spectrum
     supplies a wavelength-calibrated IRAF linear multispec sum for fitting,
     either FITS or a ThAr pickle with data/header (using lam and flux).
+    Both spectra must contain electrons; read_noise and saturation are also in
+    electrons. No gain conversion is applied, regardless of the FITS BUNIT.
     Selection uses catalog, blend, saturation and usable-cutout checks only.
     Returned coordinates increase redward; dv is a positive sampling width.
     """
     from astropy.io import fits
     from .spectra import read_sum, cut_sum
     summed = read_sum(fit_spectrum) if fit_spectrum is not None else None
-    if not np.isfinite(gain) or gain <= 0 or not np.isfinite(read_noise) or read_noise < 0:
-        raise ValueError("gain must be positive and read_noise nonnegative")
+    if not np.isfinite(read_noise) or read_noise < 0:
+        raise ValueError("read_noise must be finite and nonnegative")
     orders = list(orders)
-    selection = dict(orders=np.asarray(orders).tolist(), gain=gain, read_noise=read_noise,
+    selection = dict(orders=np.asarray(orders).tolist(), read_noise=read_noise,
                      order_offset=order_offset, half_window=half_window, saturation=saturation,
                      blend_guard=blend_guard, resolving_power=resolving_power)
     # NumPy scalar arguments are common in notebooks; store JSON-native values.
@@ -111,7 +113,7 @@ def select_lines(path, wavelength_file, *, orders, gain, read_noise, order_offse
             values = flux[int(row.aperture)-1, xp.astype(int)-1]
             count = len(xp)
             x[i, :count], y[i, :count] = xp, values
-            noise[i, :count] = np.sqrt(np.maximum(values, 0)/gain+(read_noise/gain)**2)
+            noise[i, :count] = np.sqrt(np.maximum(values, 0)+read_noise**2)
             mask[i, :count] = noise[i, :count] > 0
         direction = np.sign(group.dispersion.to_numpy())
         if not np.all(direction == direction[0]) or direction[0] == 0:
@@ -130,5 +132,5 @@ def select_lines(path, wavelength_file, *, orders, gain, read_noise, order_offse
             np.arange(n).astype(str), group.fit_wave.to_numpy(), group.lab_wave.to_numpy(),
             table_pixel=origin+sign*group.table_pixel.to_numpy(), metadata=order_metadata))
     if summed is not None:
-        data = cut_sum(data, summed, fit_spectrum, order_offset, gain, read_noise)
+        data = cut_sum(data, summed, fit_spectrum, order_offset, read_noise)
     return data

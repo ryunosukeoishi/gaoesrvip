@@ -79,7 +79,8 @@ def _shape_to_coordinates(shape):
 def _coefficient_prior(config, dv):
     reference = float(np.median(dv)) if config.reference_dv is None else config.reference_dv
     mean = np.zeros((config.degree+1, 5))
-    mean[0] = [0., np.log(1.5*reference), np.log(1.2*reference),
+    # At the mean coefficients, f=0.5 and delta=1.5*reference: centroid=0.
+    mean[0] = [-.75*reference, np.log(1.5*reference), np.log(1.2*reference),
                np.log(1.2*reference), 0.]
     scale = np.empty_like(mean)
     scale[0] = [2*reference, 1., 1., 1., 2.]

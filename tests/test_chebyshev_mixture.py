@@ -38,6 +38,35 @@ def fitted():
     return fit(synthetic(), mode='chebyshev', degree=1, progress=False)
 
 
+def test_prior_mean_profile_has_zero_centroid():
+    data = synthetic(4, contaminated=False)
+    for config in (ChebyshevIP(2), ChebyshevIP(2, reference_dv=2.)):
+        context = _prepare(data, config)
+        shape = _coordinates_to_shape(context['basis']@context['prior_mean'])
+        np.testing.assert_allclose(cumulants(shape)[:, 0], 0., atol=1e-14)
+        assert np.all(shape[:, 4] < 0)  # Gaussian 1 remains blueward of the centroid.
+
+
+def test_initializer_centroid_is_zero_independent_of_observed_peak(monkeypatch):
+    from types import SimpleNamespace
+    import gaoesrvip.spectral_mixture as sm
+
+    def capture_start(fun, x0, **kwargs):
+        return SimpleNamespace(x=x0.copy(), fun=fun(x0), success=True)
+
+    monkeypatch.setattr(sm, 'least_squares', capture_start)
+    data = synthetic(4, contaminated=False)
+    starts = []
+    for reference_shift in (0., 2.):
+        shifted = replace(data, table_pixel=data.table_pixel+reference_shift)
+        o = objective(shifted, degree=2)
+        theta = sm._initialize(o, .02, 2000)
+        shape = o.evaluate(theta)[2]['shape']
+        np.testing.assert_allclose(cumulants(shape)[:, 0], 0., atol=1e-14)
+        starts.append(shape)
+    np.testing.assert_array_equal(*starts)
+
+
 @pytest.mark.parametrize('baseline_degree', [1, 2])
 def test_gradient_and_numpyro_density_match(baseline_degree):
     import jax
@@ -183,7 +212,7 @@ def test_analysis_chebyshev_without_corner(tmp_path, monkeypatch, fitted):
     monkeypatch.setattr(analysis, '_require_corner', lambda: pytest.fail('Chebyshev must not require corner'))
     a, b = tmp_path/'thar', tmp_path/'ec'
     a.touch(); b.touch()
-    r = analysis.analyze_thar_ip_2g(a, b, tmp_path/'analysis', orders=[104], gain=2.,
+    r = analysis.analyze_thar_ip_2g(a, b, tmp_path/'analysis', orders=[104],
                                    read_noise=4., mode='chebyshev', degree=1)
     assert r.settings['mode'] == 'chebyshev'
     assert load_result(tmp_path/'analysis').orders[0].chebyshev is not None

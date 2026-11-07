@@ -77,13 +77,13 @@ def test_analysis_saves_result_and_passes_notebook_defaults_and_options(tmp_path
     monkeypatch.setattr('gaoesrvip.analysis.fit', fit)
     output = tmp_path/'run'
     actual = analyze_thar_ip_2g(thar, wavelength, output, orders=[104, 105],
-                                gain=1.935, read_noise=4., half_window=9,
+                                read_noise=4., half_window=9,
                                 warmup=10, samples=128, chains=2, seed=13, progress=False,
                                 fit_spectrum=summed)
     assert calls['selection']['fit_spectrum'] == summed
     assert calls['selection']['saturation'] == 5000
     assert calls['selection']['half_window'] == 9
-    assert calls['selection']['gain'] == 1.935
+    assert 'gain' not in calls['selection']
     assert calls['selection']['read_noise'] == 4.
     assert calls['selection']['orders'] == [104, 105]
     assert calls['fit']['mode'] == 'common'
@@ -131,7 +131,7 @@ def test_preflight_before_selection_or_fit(tmp_path, monkeypatch, problem):
         monkeypatch.setitem(sys.modules, 'corner', None)
         error = ImportError
     with pytest.raises(error):
-        analyze_thar_ip_2g(thar, wavelength, output, orders=[104], gain=1.935, read_noise=4.)
+        analyze_thar_ip_2g(thar, wavelength, output, orders=[104], read_noise=4.)
     if problem == 'nonempty':
         assert (output/'keep.txt').read_text() == 'original'
     elif problem == 'output_file':
@@ -158,7 +158,7 @@ def test_plot_failure_keeps_saved_samples_and_closes_only_new_figures(tmp_path, 
     before = set(plt.get_fignums())
     try:
         with pytest.raises(RuntimeError, match='plot failed'):
-            analyze_thar_ip_2g(thar, wavelength, tmp_path/'run', orders=[104], gain=1.935, read_noise=4.)
+            analyze_thar_ip_2g(thar, wavelength, tmp_path/'run', orders=[104], read_noise=4.)
         assert set(plt.get_fignums()) == before
         restored = load_result(tmp_path/'run')
         np.testing.assert_array_equal(restored.orders[0].shape_samples, result.orders[0].shape_samples)
@@ -208,7 +208,7 @@ def test_chebyshev_degree_options_and_plots_are_forwarded(tmp_path, monkeypatch,
     monkeypatch.setattr(analysis, '_require_corner', lambda: pytest.fail('Chebyshev requires no corner'))
     a, b = tmp_path/'thar', tmp_path/'ec'
     a.touch(); b.touch()
-    actual = analyze_thar_ip_2g(a, b, tmp_path/'result', orders=[104], gain=1., read_noise=4.,
+    actual = analyze_thar_ip_2g(a, b, tmp_path/'result', orders=[104], read_noise=4.,
         mode='chebyshev', nuts=nuts, warmup=8, samples=6, seed=31,
         min_inlier_probability=.7, ci=.9, plot_n_positions=81, zoom_outliers=False, **options)
     assert actual is result
@@ -240,7 +240,7 @@ def test_analysis_rejects_invalid_degree_options_before_work(tmp_path, monkeypat
     kwargs.update(options)
     with pytest.raises(ValueError, match=message):
         analyze_thar_ip_2g(tmp_path/'thar', tmp_path/'ec', tmp_path/'output',
-                          orders=[104], gain=1., read_noise=4., **kwargs)
+                          orders=[104], read_noise=4., **kwargs)
     assert not (tmp_path/'output').exists()
 
 
@@ -252,7 +252,7 @@ def test_full_chebyshev_degree_search_saves_selected_result(tmp_path, monkeypatc
     monkeypatch.setattr('gaoesrvip.analysis._require_corner', lambda: pytest.fail('No corner needed'))
     a, b = tmp_path/'thar', tmp_path/'ec'
     a.touch(); b.touch()
-    actual = analyze_thar_ip_2g(a, b, tmp_path/'analysis', orders=[104], gain=1., read_noise=4.,
+    actual = analyze_thar_ip_2g(a, b, tmp_path/'analysis', orders=[104], read_noise=4.,
         mode='chebyshev', max_degree=1, nuts=False, progress=False,
         min_inlier_probability=1., plot_n_positions=30)
     expected = fit(data, mode='chebyshev', degrees=[0, 1], nuts=False, progress=False)

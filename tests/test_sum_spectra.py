@@ -58,7 +58,7 @@ def test_sum_uses_central_selection_and_redward_samples(tmp_path, monkeypatch, r
     image[3] += 300*pixel_mass(v, shape, scale)
     center = tmp_path/'center.fits'
     fits.writeto(center, image)
-    kw = dict(orders=[104], gain=1.935, read_noise=4., saturation=5000)
+    kw = dict(orders=[104], read_noise=4., saturation=5000)
     native = select_lines(center, db, **kw)[0]
     assert native.metadata['coordinate']['velocity_positive'] == 'red'
     np.testing.assert_allclose((native.x[0]-native.table_pixel[0])*native.dv[0], np.sort(v[52:68]), atol=1e-8)
@@ -74,7 +74,7 @@ def test_sum_uses_central_selection_and_redward_samples(tmp_path, monkeypatch, r
     d = data[0]
     assert d.lab_wave.tolist() == native.lab_wave.tolist()
     np.testing.assert_allclose(d.y[0], sy[d.x[0].astype(int)-1], atol=1e-6)
-    np.testing.assert_allclose(d.noise**2, d.y/1.935+70*(4/1.935)**2)
+    np.testing.assert_allclose(d.noise**2, d.y+70*4**2)
     assert d.y.max() > 5000
     assert d.metadata['noise']['ncombine'] == 70
     assert d.metadata['input_files']['selection_spectrum'] == str(center)
@@ -182,13 +182,13 @@ def test_sum_keeps_finite_nonpositive_flux_and_reports_missing_windows(tmp_path)
     flux = np.full(100, 100.)
     flux[45:50] = [0., -1., np.nan, 0., -2.]
     summed = ({4: (wave, flux, 1, 0)}, 107)
-    d = cut_sum([data], summed, tmp_path/'sum.fits', 100, 1.935, 4.)[0]
+    d = cut_sum([data], summed, tmp_path/'sum.fits', 100, 4.)[0]
     assert np.any((d.y <= 0) & d.mask)
     assert np.any(~d.mask)
     # Global count, even near edges; no requirement that all strips contribute.
     assert d.metadata['noise']['ncombine'] == 107
     with pytest.warns(UserWarning, match='insufficient coverage'):
         with pytest.raises(ValueError, match='No selected lines'):
-            cut_sum([data], ({4: (wave[:10], flux[:10], 1, 0)}, 107), tmp_path/'sum.fits', 100, 1.935, 4.)
+            cut_sum([data], ({4: (wave[:10], flux[:10], 1, 0)}, 107), tmp_path/'sum.fits', 100, 4.)
     with pytest.raises(ValueError, match='Missing aperture'):
-        cut_sum([data], ({5: (wave, flux, 1, 0)}, 107), tmp_path/'sum.fits', 100, 1.935, 4.)
+        cut_sum([data], ({5: (wave, flux, 1, 0)}, 107), tmp_path/'sum.fits', 100, 4.)

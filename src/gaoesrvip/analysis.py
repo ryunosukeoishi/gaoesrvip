@@ -93,7 +93,7 @@ def save_analysis_figures(result, output_dir, *, dpi=180, min_inlier_probability
     return output
 
 
-def analyze_thar_ip_2g(thar, wavelength_file, output_dir, *, orders, gain, read_noise,
+def analyze_thar_ip_2g(thar, wavelength_file, output_dir, *, orders, read_noise,
                        saturation=5000, order_offset=100, half_window=7, blend_guard=2.,
                        fit_spectrum=None,
                        resolving_power=65000, baseline_degree=1,
@@ -106,7 +106,8 @@ def analyze_thar_ip_2g(thar, wavelength_file, output_dir, *, orders, gain, read_
 
     Defaults match ``thar_ip_analysis_common_for_jaxstar.ipynb``: a fixed reference
     wavelength, pixel-center evaluation, a linear baseline, and saturation=5000. Supply
-    orders, gain and read_noise for the input spectrum. Selection and sampling
+    orders and read_noise for the input spectrum. Input flux, read_noise and
+    saturation are in electrons. Selection and sampling
     keywords have the same meaning as in select_lines() and fit().
     fit_spectrum optionally supplies a wavelength-calibrated summed ThAr,
     as an IRAF multispec FITS or a ThAr .pkl/.pickle containing data/header.
@@ -157,7 +158,7 @@ def analyze_thar_ip_2g(thar, wavelength_file, output_dir, *, orders, gain, read_
         _require_corner()
     output.mkdir(parents=True, exist_ok=True)
     data = select_lines(
-        thar, wavelength_file, orders=orders, gain=gain, read_noise=read_noise,
+        thar, wavelength_file, orders=orders, read_noise=read_noise,
         saturation=saturation, order_offset=order_offset, half_window=half_window,
         blend_guard=blend_guard, resolving_power=resolving_power,
         fit_spectrum=fit_spectrum,

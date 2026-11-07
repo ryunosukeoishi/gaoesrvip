@@ -12,7 +12,7 @@ from scipy.optimize import minimize, least_squares, lsq_linear
 from scipy.special import logsumexp
 
 from .chebyshev import (ChebyshevIP, _degree, _prepare, _basis, _coordinates_to_shape,
-                        _shape_to_coordinates, ChebyshevFit)
+                        ChebyshevFit)
 from .fitting import _bounds
 from .data import OrderData
 
@@ -79,7 +79,7 @@ class _SpectralObjective:
             raise ValueError('Every line requires a positive finite observed peak')
         self.y = np.where(data.mask, data.y/self.peak[:, None], 0.)
         self.noise = np.where(data.mask, data.noise/self.peak[:, None], 1.)
-        lo, hi, _, _, local, shape = _bounds(data, baseline_degree)
+        lo, hi, _, _, local, _ = _bounds(data, baseline_degree)
         radius = np.maximum(1., np.max(np.abs(self.u), axis=1))
         self.area = np.maximum(1., local[:, 2]/self.peak)
         self.local_scale = np.column_stack((self.peak, self.peak/radius, self.peak*self.area))
@@ -89,7 +89,7 @@ class _SpectralObjective:
         self.local_shape = local.shape
         self.nlocal = local.size
         self.ncoef = context['prior_mean'].size
-        self.initial_local, self.initial_shape = local, shape
+        self.initial_local = local
         self.baseline_design = [np.ones_like(self.u), self.u/radius[:, None]]
         if baseline_degree == 2:
             self.baseline_design.append((self.u/radius[:, None])**2)
@@ -180,13 +180,9 @@ def _initial_residual_jacobian(theta, objective, scatter):
 
 def _initialize(objective, scatter, max_nfev, coefficient_guard=12.):
     o = objective
-    shape = np.median(o.initial_shape, axis=0)
-    shape[4] += (shape[1]-.5)*shape[3]
-    shape[1] = .5
-    coefficients = np.zeros_like(o.context['prior_mean'])
-    coefficients[0] = _shape_to_coordinates(shape)
+    # z=0 uses the prior-mean IP: constant in wavelength, with centroid zero.
     initial = np.r_[(o.initial_local/o.local_scale).ravel(),
-                    ((coefficients-o.context['prior_mean'])/o.context['prior_scale']).ravel()]
+                    np.zeros(o.ncoef)]
     lower = np.r_[o.local_lower.ravel(), np.full(o.ncoef, -coefficient_guard)]
     upper = np.r_[o.local_upper.ravel(), np.full(o.ncoef, coefficient_guard)]
     result = least_squares(lambda x: _initial_residual_jacobian(x, o, scatter)[0],

@@ -21,12 +21,12 @@ def test_selection_metadata_through_fit_and_roundtrip(tmp_path, monkeypatch):
     wavelength.write_text(database([[4, 105, 50, 5000, 5000, 1, 1, 1],
                                     [5, 106, 70, 4953, 4953, 1, 1, 1]], constant=525000))
     data = select_lines(thar, wavelength, orders=np.array([104, 105, 106]),
-                        gain=np.float64(1.935), read_noise=np.float32(4),
+                        read_noise=np.float32(4),
                         order_offset=np.int64(100), half_window=np.int64(9), saturation=None,
                         blend_guard=np.float32(1.5), resolving_power=np.int64(60000))
     expected = dict(
         input_files=dict(spectrum=str(thar.resolve()), wavelength_solution=str(wavelength.resolve())),
-        selection=dict(orders=[104, 105, 106], gain=1.935, read_noise=4., order_offset=100,
+        selection=dict(orders=[104, 105, 106], read_noise=4., order_offset=100,
                        half_window=9, saturation=None, blend_guard=1.5, resolving_power=60000))
     expected['coordinate'] = dict(velocity_positive='red', kind='native',
                                   original_pixel_scale=1, original_pixel_offset=0)
@@ -38,9 +38,9 @@ def test_selection_metadata_through_fit_and_roundtrip(tmp_path, monkeypatch):
     assert data[0].metadata == expected  # No shared nested dictionaries across orders.
 
     # Combine orders selected with different settings, including default arguments.
-    other = select_lines(thar, wavelength, orders=[105], gain=2., read_noise=3.)[0]
-    assert other.metadata['selection'] == dict(orders=[105], gain=2., read_noise=3.,
-        order_offset=100, half_window=7, saturation=51000, blend_guard=2.,
+    other = select_lines(thar, wavelength, orders=[105], read_noise=3.)[0]
+    assert other.metadata['selection'] == dict(orders=[105], read_noise=3.,
+        order_offset=100, half_window=7, saturation=51000*1.92, blend_guard=2.,
         resolving_power=65000)
 
     # The test checks metadata transport, without numerical fitting or sampling.

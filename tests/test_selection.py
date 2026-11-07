@@ -44,13 +44,13 @@ def test_selection_reasons_and_cutout_extraction(tmp_path, monkeypatch):
     image[3, 24], image[3, 74], image[3, 99] = 10, 1000, 30
     thar = tmp_path/'thar.fits'
     fits.writeto(thar, image)
-    data = select_lines(thar, p, orders=[104], gain=2, read_noise=4, saturation=500)
+    data = select_lines(thar, p, orders=[104], read_noise=4, saturation=500)
     d = data[0]
     assert d.order == 104 and list(d.line_ids) == ['0', '1']
     assert d.table_pixel[0] == pytest.approx(60.5)
     np.testing.assert_array_equal(d.y[0], image[3, 17:32])
-    np.testing.assert_allclose(d.noise[0]**2, d.y[0]/2+4)
-    default_data = select_lines(thar, p, orders=[104], gain=2, read_noise=4,
+    np.testing.assert_allclose(d.noise[0]**2, d.y[0]+4**2)
+    default_data = select_lines(thar, p, orders=[104], read_noise=4,
                                 half_window=5, saturation=500)
     assert isinstance(default_data, list)
     assert len(default_data[0].x0) == 2  # Both isolated, unsaturated windows survive without a fit-quality cut.
@@ -71,11 +71,11 @@ def test_selection_reasons_and_cutout_extraction(tmp_path, monkeypatch):
     relocated = tmp_path/'calibration'/'wavelength.db'
     relocated.parent.mkdir()
     p.rename(relocated)
-    pipeline_data = select_lines(thar, relocated, orders=[104], gain=2, read_noise=4,
+    pipeline_data = select_lines(thar, relocated, orders=[104], read_noise=4,
                                  half_window=5, saturation=500)
     np.testing.assert_array_equal(pipeline_data[0].y, default_data[0].y)
     with pytest.raises(FileNotFoundError):
-        select_lines(thar, p, orders=[104], gain=2, read_noise=4)
+        select_lines(thar, p, orders=[104], read_noise=4)
 
 
 def test_posterior_curves_keep_joint_draws_and_fixed_data_frame():
@@ -97,8 +97,20 @@ def test_posterior_curves_keep_joint_draws_and_fixed_data_frame():
         np.testing.assert_allclose(curve, expected)
 
 
+def test_default_saturation_uses_electrons(tmp_path):
+    db, thar = tmp_path/'ecthar', tmp_path/'thar.fits'
+    db.write_text(database([[4, 105, x, wave, wave, 1, 1, 1]
+        for x, wave in ((25, 4999), (60, 5000), (95, 5001))], constant=525000))
+    image = np.full((4, 120), 5.)
+    image[3, [24, 59, 94]] = [51001., 97919., 97920.]
+    fits.writeto(thar, image)
+    data = select_lines(thar, db, orders=[104], read_noise=4.)[0]
+    np.testing.assert_array_equal(data.y.max(axis=1), [51001., 97919.])
+    np.testing.assert_allclose(data.noise**2, data.y+4.**2)
+
+
 @pytest.mark.parametrize('kwargs', [dict(screen_fit=True), dict(screen_fit=False),
-                                    dict(max_center_shift=1.), dict(max_width_error=.1)])
-def test_removed_screen_options_raise(kwargs):
+    dict(max_center_shift=1.), dict(max_width_error=.1), dict(gain=1.935)])
+def test_removed_selection_options_raise(kwargs):
     with pytest.raises(TypeError, match='unexpected keyword argument'):
-        select_lines('unused.fits', 'unused.db', orders=[104], gain=2., read_noise=4., **kwargs)
+        select_lines('unused.fits', 'unused.db', orders=[104], read_noise=4., **kwargs)

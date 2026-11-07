@@ -21,7 +21,7 @@ from gaoesrvip import select_lines, fit
 data = select_lines(
     "data/ThAr20251107_2.center.fits",
     "data/ecThAr20251107_2.center",
-    orders=[104, 105], gain=1.935, read_noise=4.0,
+    orders=[104, 105], read_noise=4.0,
     order_offset=100, half_window=7,
 )
 
@@ -45,7 +45,7 @@ data = select_lines(
     "data/ThAr20251107_2.center.fits",
     "data/ecThAr20251107_2.center",
     fit_spectrum="data/ThAr20251107_2_ecfw.fits",
-    orders=[104, 105], gain=1.935, read_noise=4.0, saturation=5000,
+    orders=[104, 105], read_noise=4.0, saturation=5000,
 )
 individual = fit(data, mode="individual")
 common = fit(data, mode="common")
@@ -80,12 +80,20 @@ interpolation is applied. Uncovered windows or windows with fewer
 than nine usable samples are skipped with a warning; finite zero and negative flux
 samples are retained. FITS padding outside each spectrum's WCS length is excluded.
 
-For sums, the diagonal variance in ADU squared is approximated as
-`max(flux, 0)/gain + NCOMBINE*(read_noise/gain)**2`. This uses the global count even
+Both input spectra must already be in electrons. The GAOES-RV overscan processing
+applies the amplifier gains; its FITS headers can retain the original `BUNIT=ADU`.
+This package does not infer units from that header or apply a gain conversion.
+The `gain` argument has been removed; omit it in existing calls.
+
+For sums, the diagonal variance in electrons squared is approximated as
+`max(flux, 0) + NCOMBINE*read_noise**2`. This uses the global count even
 near edges with fewer contributors and ignores interpolation weights and pixel
 correlations. Native spectra use the same expression with a count of one.
-`gain` is in electrons/ADU and `read_noise` in electrons. `saturation` is an ADU
+`read_noise` and `saturation` are in electrons. `saturation` is a
 selection limit on the central input, not a test of other strips or the summed flux.
+The selection default is `51000 * 1.92 = 97920` electrons, converting the
+[51,000 ADU instrument specification](https://www.o.kwasan.kyoto-u.ac.jp/inst/gaoes-rv/spec.html)
+with the smaller amplifier gain. The common-analysis default remains 5000 electrons.
 
 Both inputs produce red-positive analysis coordinates. Decreasing-wavelength inputs
 are reversed without interpolation; `x`, `x0`, and `table_pixel` then refer to the
@@ -104,7 +112,7 @@ checks, without a preliminary fitting step. `screen_fit` and its quality thresho
 arguments in existing code. The profile definition is fixed; no model or
 pixel-integration flags are stored in new results.
 Physical orders are `aperture + order_offset`.
-Set the gain, read noise, and `order_offset` for your input data.
+Set the read noise and `order_offset` for your input data.
 Individual/common `fit()` defaults to `warmup=500, samples=500, chains=1` and prints the MCMC summary after sampling.
 
 ## Chebyshev spectral mixture
@@ -210,13 +218,19 @@ or averaged over posterior draws for NUTS. It is not a fixed residual-tolerance 
 for comparing polynomial degrees.
 
 Optimization and NUTS use the same priors. For `r = median(dv)`, the coefficient
-intercept means are `(0, log(1.5r), log(1.2r), log(1.2r), 0)` with SDs
+intercept means are `(-0.75r, log(1.5r), log(1.2r), log(1.2r), 0)` with SDs
 `(2r, 1, 1, 1, 2)`; term `k >= 1` has zero mean and SDs
-`(r, .5, .5, .5, 1) / k**2`. The outlier fraction has a Beta(1,4) prior.
+`(r, .5, .5, .5, 1) / k**2`. At these mean coefficients, `f2=0.5` and
+`delta=1.5r`, so the profile centroid `mu1+f2*delta` is zero. This centers the
+profile at the prior-mean coefficients; it does not fix the fitted centroid.
+The outlier fraction has a Beta(1,4) prior.
 `s_in = .01 exp(a)`, `s_out = hypot(s_in, .05 exp(b))`, with independent
 `a,b ~ Normal(0,.7)`. Local parameter bounds are the existing line-fit bounds.
 An initial regularized least-squares fit uses a 2%-of-peak residual floor only to
-initialize MAP; it is not a fixed likelihood scale. This is a MAP workflow, rather
+initialize MAP; it is not a fixed likelihood scale. Its IP starts at the prior-mean
+coefficients (zero centroid and zero nonconstant terms), independently of the
+observed peak positions. Local background/flux seeds still use the data, and all
+parameters are free to move during optimization. This is a MAP workflow, rather
 than the unregularized maximum-likelihood fits in the experimental degree-search notebook.
 
 `plot_cumulants()` shows intrinsic κ1–κ5, excluding pixel integration, with the
@@ -253,8 +267,8 @@ chebyshev = analyze_thar_ip_2g(
     thar="data/ThAr20251107_2.center.fits",
     wavelength_file="data/ecThAr20251107_2.center",
     fit_spectrum="data/ThAr20251107_2_ecfw.fits",
-    output_dir="results/thar_ip_analysis_chebyshev_for_jaxstar",
-    orders=[104, 105], gain=1.0, read_noise=4.0, saturation=51000,
+    output_dir="examples/results_chebyshev/my_run",
+    orders=[104, 105], read_noise=4.0, saturation=51000 * 1.92,
     mode="chebyshev", max_degree=4, nuts=False,
 )
 ```
@@ -262,6 +276,8 @@ chebyshev = analyze_thar_ip_2g(
 The paired notebooks are
 [common IP](examples/thar_ip_analysis_common_for_jaxstar.ipynb) and
 [Chebyshev mixture](examples/thar_ip_analysis_chebyshev_for_jaxstar.ipynb).
+They save results under `examples/results_common/` and
+`examples/results_chebyshev/`, respectively.
 The Chebyshev notebook ends with the one-call alternative, using the same input
 and plotting settings as its step-by-step workflow.
 
@@ -295,13 +311,13 @@ common = analyze_thar_ip_2g(
     wavelength_file="data/ecThAr20251107_2.center",
     output_dir="results/ThAr20251107_2",
     orders=[104, 105],
-    gain=1.935, read_noise=4.0, saturation=5000,
+    read_noise=4.0, saturation=5000,
 )
 common.parameters
 ```
 
 This convenience function defaults to `mode="common"`, `baseline_degree=1`, and
-`saturation=5000`; lower-level `select_lines()` defaults to `saturation=51000`.
+`saturation=5000`; lower-level `select_lines()` defaults to `saturation=51000 * 1.92`.
 The optional `fit_spectrum` argument is also accepted. Selection options such as
 `half_window` and `blend_guard`, and fit options such as `baseline_degree`,
 `warmup`, `samples`, `chains`, and `seed`, can be supplied directly as keywords.
@@ -486,7 +502,7 @@ Results without a baseline degree use the original linear baseline.
 ### Input and selection metadata
 
 `select_lines()` records the absolute paths of the spectrum and wavelength-solution
-files, plus all selection arguments (including defaults): `orders`, `gain`,
+files, plus all selection arguments (including defaults): `orders`,
 `read_noise`, `order_offset`, `half_window`, `saturation`, `blend_guard`,
 and `resolving_power`.
 
